@@ -24,6 +24,44 @@ Every existing bot screens finished code. By then the wasted work has already ha
 
 Litmus does both.
 
+---
+
+## How Codex and GPT 5.6 were used
+
+This is the uncommon submission where the capability being judged is also the product's core engine. GPT 5.6 is not a feature bolted onto Litmus. It **is** Litmus. Remove it and there is no product left, only a static dashboard.
+
+### GPT 5.6 runs the product
+
+Seven distinct reasoning tasks in the running application are GPT 5.6 calls. Every one uses the Responses API with a strict JSON schema, so verdicts come back as enums and a malformed response fails loudly instead of rendering as garbage.
+
+| Product capability | What GPT 5.6 actually does | Where |
+|---|---|---|
+| **Contributor matching** | Reads real repository evidence (languages by bytes, topics, recency) and ranks live GitHub issues against it, citing which specific project makes each match plausible | `contributorMatch()` |
+| **Repository orientation** | Turns the retrieved code slice into a sixty second tour, naming the non obvious constraints a newcomer would trip over | `orientIssue()` |
+| **Plan collision analysis** | Compares a stated approach against real callers, tests and conventions, and must cite path, symbol and line range for every finding | `analyzePlan()` |
+| **Revision judgement** | Receives the previous plan and previous findings, and decides whether each earlier point is now resolved, partly resolved or ignored | `analyzePlan()` |
+| **The bot's screening question** | Reads the code an issue touches and produces one question only somebody who opened the file could answer | `botAsk()` |
+| **Answer assessment** | Judges a contributor's reply against the actual code and returns a verdict | `botAssess()` |
+| **Trust brief and priority ranking** | Weighs diff, planning trail, drift check and structural risk into one verdict, and rebuilds the maintainer queue around plain language intent | `analyzePullRequest()`, `priorityWorkspace()` |
+
+Three of GPT 5.6's headline capabilities are doing load bearing work here:
+
+**Code review reasoning.** The plan checker found a deadlock nobody told it about. Given a request to add an eviction policy, it worked out that the storage class is guarded by a non reentrant `threading.Lock`, that the obvious implementation would call a method acquiring that same lock, and that the first upload hitting the ceiling would freeze the entire service. It cited three separate line ranges across two files. That is the product's central promise, and it is GPT 5.6 doing it.
+
+**Large context.** Repo memory feeds up to fifty six indexed files, a dependency graph neighbourhood, constraint signals and conventions into a single call, so the model reasons about the project rather than the diff.
+
+**Multi repository understanding.** The same reasoning runs across any public repository on GitHub, cold, with no per repository configuration.
+
+### Codex built it
+
+The entire codebase was written with Codex, which is the honest and slightly recursive part of this submission: an AI coding tool was used to build the tool that helps people contribute well with AI coding tools.
+
+Codex did the work you would expect (the zero dependency HTTP server, the dependency graph resolver for the JavaScript, TypeScript and Python module systems, the whole frontend and its design system), but the parts where it mattered most were the fiddly ones. The GitHub App authentication path, where a short lived RS256 JWT is signed with Node's built in crypto and exchanged for a cached installation token, was written and debugged with Codex without pulling in a JWT library. So was the import resolution logic that turns raw specifiers into real graph edges.
+
+It also caught things. Reading raw API output surfaced a scoring bug where the priority queue was returning positions like 1, 2, 3, 4 instead of using the 0 to 100 scale. The ordering looked right, so it survived a casual glance, but the numbers carried no information.
+
+Litmus does not argue that AI assistance is the problem. It was built with AI assistance. It argues that **not understanding your own contribution** is the problem, and those are very different things. That is why Litmus never attempts to detect AI authorship. It asks one question and listens to the answer.
+
 ## What Litmus does
 
 ### For contributors
@@ -122,7 +160,7 @@ The whole thing is deliberately small: a zero dependency Node server and a vanil
 
 **The engine is GPT 5.6** doing the actual product work rather than just helping me write it. It handles contributor matching, orientation, plan collision analysis, the bot's screening question and its assessment, the trust brief, and intent driven ranking. Every call goes through the Responses API with a strict JSON schema.
 
-**Repo memory** is built by walking the git tree through the GitHub API, selecting up to fifty six of the most structurally interesting files, resolving import statements across four language families into a real dependency graph, scanning for constraint signals with targeted patterns, and scoring structural risk with the formula above. It is cached against the branch SHA, so the expensive pass happens once and every later action is fast.
+**Repo memory** is built by walking the git tree through the GitHub API, selecting up to fifty six of the most structurally interesting files, resolving import statements into a real dependency graph, scanning for constraint signals with targeted patterns, and scoring structural risk with the formula above. It is cached against the branch SHA, so the expensive pass happens once and every later action is fast.
 
 **The planning trail** is what makes the whole loop work. Each plan submission is appended to the issue claim with its soundness, the points raised, and the evidence paths cited. When a pull request appears, Litmus recovers that trail, checks the diff scope against the files the plan implied, and hands the maintainer both the change and the story of how it was arrived at.
 
