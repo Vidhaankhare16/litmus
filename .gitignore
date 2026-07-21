@@ -3,7 +3,8 @@
 .env.local
 *.pem
 
-# Local demo material and runtime state.
+# Local demo and submission material, plus runtime state.
 DEMO-SCRIPT.md
+DEVPOST.md
 data/
 node_modules/
