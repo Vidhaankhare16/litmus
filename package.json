@@ -1,0 +1,10 @@
+{
+  "name": "litmus",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Litmus — the test happens before the code. Two-sided contribution intelligence for open source.",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check server.js"
+  }
+}

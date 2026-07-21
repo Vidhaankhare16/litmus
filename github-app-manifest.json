@@ -1,0 +1,15 @@
+{
+  "name": "Litmus",
+  "description": "Asks one repository-grounded question before code is written, then hands maintainers a trust-ranked queue.",
+  "url": "https://your-deployment.example",
+  "hook_attributes": { "url": "https://your-deployment.example/webhooks/github", "active": true },
+  "redirect_url": "https://your-deployment.example",
+  "public": true,
+  "default_permissions": {
+    "contents": "read",
+    "issues": "write",
+    "pull_requests": "write",
+    "metadata": "read"
+  },
+  "default_events": ["issue_comment", "issues", "pull_request"]
+}

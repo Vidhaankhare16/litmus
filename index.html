@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0e1017" />
+    <title>Litmus — the test happens before the code</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,420;0,9..144,560;1,9..144,420;1,9..144,560&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="brand" id="home-button" title="Back to start"><span class="brand-strip"></span><span class="brand-name">litmus</span></button>
+      <div class="top-center">CONTRIBUTION INTELLIGENCE · <span id="runtime-state">CONNECTING</span></div>
+      <nav class="top-nav">
+        <button class="top-link" data-role="contributor">Contributor</button>
+        <button class="top-link" data-role="maintainer">Maintainer</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- ============ WELCOME ============ -->
+      <section class="view active welcome-view" id="welcome-view">
+        <div class="welcome-copy">
+          <div class="eyebrow">OPEN SOURCE HAS A TRUST PROBLEM</div>
+          <h1>The test happens <em>before</em> the code.</h1>
+          <p>Litmus matches contributors to issues they can actually land, pressure-tests their approach against the real codebase before a line is written, and hands maintainers a queue where work that can explain itself rises to the top.</p>
+          <div class="hero-strip" aria-hidden="true">
+            <div class="strip"><span class="strip-marker hero-marker"></span></div>
+            <div class="strip-legend"><span>weak signal</span><span>needs review</span><span>strong signal</span></div>
+          </div>
+        </div>
+        <div class="role-grid">
+          <button class="role-card" data-role="contributor">
+            <small>I WRITE CODE</small>
+            <h2>Find an issue you can actually land</h2>
+            <p>Litmus reads your public GitHub work, matches you to under-served issues that fit it, and checks your approach against the real code before you build.</p>
+            <b>Enter as contributor →</b>
+          </button>
+          <button class="role-card maintainer-role" data-role="maintainer">
+            <small>I MAINTAIN A REPO</small>
+            <h2>See which PRs can explain themselves</h2>
+            <p>Connect a repo to build its structural memory, steer the queue with plain language, and read a trust brief instead of every diff cold.</p>
+            <b>Enter as maintainer →</b>
+          </button>
+        </div>
+        <div class="welcome-foot">Powered by GPT-5.6 reading real repositories · Litmus never guesses who wrote the code — it tests whether the work can explain itself.</div>
+      </section>
+
+      <!-- ============ CONTRIBUTOR ============ -->
+      <section class="view app-view" id="contributor-view">
+        <aside class="rail">
+          <div class="rail-role"><span class="role-dot"></span><div><small>WORKSPACE</small><strong>Contributor</strong></div></div>
+          <button class="rail-item active" data-contributor-tab="discover">Discover</button>
+          <button class="rail-item" data-contributor-tab="trail">My trail</button>
+          <button class="rail-item" data-contributor-tab="how">How it works</button>
+          <div class="rail-bottom">Your public profile is read once, to build an evidence-backed skill map. Nothing is posted without you.</div>
+        </aside>
+        <div class="workspace">
+          <div class="contributor-panel active" id="discover-panel">
+            <div class="page-kicker">CONTRIBUTOR MATCHING</div>
+            <h1>Work that fits the work <em>you've already done.</em></h1>
+            <p class="lede">Evidence over self-reporting: Litmus reads your repositories, languages, and topics, then finds open, unassigned issues in repos that actually want the help.</p>
+            <div class="profile-bar">
+              <div class="profile-input"><label for="github-username">YOUR GITHUB USERNAME</label><input id="github-username" placeholder="octocat" autocomplete="username" spellcheck="false" /></div>
+              <button class="cta" id="analyze-profile">Analyze my work</button>
+            </div>
+            <div class="match-loading" id="match-loading"><div class="loader"></div><span>Reading repositories, languages, and topics… then searching live GitHub issues…</span></div>
+            <div id="contributor-results" class="contributor-results">
+              <div class="empty-state"><h2>Your next good contribution is out there.</h2><p>Enter a public GitHub username. You'll get a skill map built from real evidence and a shortlist of issues where that evidence gives you the best chance of a merged PR.</p></div>
+            </div>
+          </div>
+          <div class="contributor-panel" id="trail-panel">
+            <div class="page-kicker">CONTRIBUTION TRAIL</div>
+            <h1>Proof you did the thinking, <em>not just the typing.</em></h1>
+            <p class="lede">Every orientation, plan, revision, and trust brief is recorded here. Revising a plan after repository feedback is the strongest signal Litmus can show a maintainer.</p>
+            <div id="trail-content" class="trail-content"></div>
+          </div>
+          <div class="contributor-panel" id="how-panel">
+            <div class="page-kicker">HOW LITMUS WORKS</div>
+            <h1>Four steps, and the code <em>comes last.</em></h1>
+            <div class="how-grid">
+              <article><span class="how-step">MATCH</span><h3>Evidence finds the issue</h3><p>Your public work is matched to open, unassigned issues — biased toward under-served repos and maintainers who registered here asking for help.</p></article>
+              <article><span class="how-step">ORIENT</span><h3>A tour before you touch anything</h3><p>Litmus reads the implicated files, their callers, the tests, and the constraints that trip people up — and briefs you in sixty seconds.</p></article>
+              <article><span class="how-step">PLAN</span><h3>Your approach meets the real code</h3><p>State your intended approach. Litmus surfaces the specific collisions a naive plan would miss, tied to real functions with file:line evidence.</p></article>
+              <article><span class="how-step">BRIEF</span><h3>Your PR arrives pre-explained</h3><p>The maintainer gets a trust brief: what the change does, whether you revised when corrected, and one sortable verdict.</p></article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ MAINTAINER ============ -->
+      <section class="view app-view" id="maintainer-view">
+        <aside class="rail">
+          <div class="rail-role maintainer"><span class="role-dot"></span><div><small>WORKSPACE</small><strong>Maintainer</strong></div></div>
+          <button class="rail-item active" data-maintainer-tab="priority">Priority queue</button>
+          <button class="rail-item" data-maintainer-tab="repos">Repositories</button>
+          <button class="rail-item" data-maintainer-tab="bot">Litmus bot</button>
+          <button class="rail-item" data-maintainer-tab="triage">Triage a PR</button>
+          <div class="rail-bottom">You decide everything. Litmus compresses the reading, never the judgment.</div>
+        </aside>
+        <div class="workspace">
+          <div class="maintainer-panel active" id="priority-panel">
+            <div class="page-kicker">PRIORITY WORKSPACE</div>
+            <h1>Tell it what matters. <em>It rebuilds the queue.</em></h1>
+            <p class="lede">Litmus reads your open issues and PRs against the repo's structural memory, then ranks both around your stated intent — auth refactor first, public API changes first, first-timer-friendly first. Your call.</p>
+            <div class="focus-box">
+              <label for="maintainer-focus">WHAT SHOULD THIS REPOSITORY PRIORITIZE RIGHT NOW?</label>
+              <textarea id="maintainer-focus" placeholder="Example: I'm focused on the auth refactor this month — promote anything touching session handling, and surface first-time-friendly issues for new contributors."></textarea>
+              <div class="focus-row"><span id="focus-repo-label">Connect a repository first (Repositories tab).</span><button class="cta" id="build-priority">Build priority queue</button></div>
+            </div>
+            <div id="priority-workspace" class="priority-workspace">
+              <div class="empty-state"><h2>A queue with context, not guesses.</h2><p>Connect a repository, say what matters this month, and Litmus ranks real open issues and PRs — weighing structural risk, planning trails, and cross-PR collisions.</p></div>
+            </div>
+          </div>
+          <div class="maintainer-panel" id="repos-panel">
+            <div class="page-kicker">REPOSITORY MEMORY</div>
+            <h1>Connected once. <em>Remembered after.</em></h1>
+            <p class="lede">On first connection Litmus builds a durable map of the repo — modules, dependency edges, tests, conventions, constraint signals — and refreshes it only when the default branch moves. Every plan check and trust brief runs against that memory, not a cold read. Registered repos are also surfaced first to matched contributors.</p>
+            <div class="repo-onboard">
+              <label for="maintainer-repo">REPOSITORY</label>
+              <div class="repo-input-row"><span>github.com/</span><input id="maintainer-repo" placeholder="owner/repository" autocomplete="off" spellcheck="false" /><button class="cta" id="activate-repo">Connect repository</button></div>
+              <small>Public repositories only in this demo. The structural index is stored locally and keyed to the branch revision.</small>
+            </div>
+            <div id="registered-repos" class="registered-repos"></div>
+          </div>
+          <div class="maintainer-panel" id="bot-panel">
+            <div class="page-kicker">LITMUS BOT · GITHUB</div>
+            <h1>One question, <em>asked where the work happens.</em></h1>
+            <p class="lede">Turn the bot on and Litmus answers volunteers on your issues with a single question drawn from the code that issue touches — the kind only someone who opened the file can answer. It reads the reply, judges it against the repo, and records the result on the contributor's trail. You never type a word.</p>
+            <div class="bot-console">
+              <div class="bot-toggle-row">
+                <div><strong id="bot-repo-name">No repository connected</strong><p id="bot-repo-note">Connect a repository in the Repositories tab first.</p></div>
+                <button class="switch" id="bot-toggle" role="switch" aria-checked="false" aria-label="Enable the Litmus bot for this repository"><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label">Off</span></button>
+              </div>
+              <div class="bot-identity" id="bot-identity"></div>
+              <div id="bot-issue-area"></div>
+            </div>
+            <div id="bot-thread"></div>
+          </div>
+          <div class="maintainer-panel" id="triage-panel">
+            <div class="page-kicker">STANDALONE TRIAGE</div>
+            <h1>Any PR, <em>one trust brief.</em></h1>
+            <p class="lede">Paste any open pull request URL. Litmus reads the diff against the repo's memory and any Litmus planning trail, then renders the verdict a maintainer actually needs.</p>
+            <div class="repo-onboard">
+              <label for="triage-pr-url">PULL REQUEST URL</label>
+              <div class="repo-input-row"><input id="triage-pr-url" placeholder="https://github.com/owner/repository/pull/123" spellcheck="false" /><button class="cta" id="triage-pr">Create trust brief</button></div>
+            </div>
+            <div id="triage-result"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ CONTRIBUTOR JOURNEY ============ -->
+      <section class="view journey-view" id="journey-view">
+        <button class="back-link" id="back-to-contributor">← Back to matching</button>
+        <div class="journey-header">
+          <div>
+            <div class="page-kicker">CONTRIBUTION PRE-FLIGHT · <span id="journey-issue-id">ISSUE</span></div>
+            <h1 id="journey-title">Make the right change <em>the first time.</em></h1>
+            <p id="journey-repo" class="mono-note">Repository-aware contribution guidance</p>
+          </div>
+          <div class="steps" id="journey-steps">
+            <div class="step" data-step="0"><span>1</span><small>Orient</small></div>
+            <div class="step" data-step="1"><span>2</span><small>Plan</small></div>
+            <div class="step" data-step="2"><span>3</span><small>Revise</small></div>
+            <div class="step" data-step="3"><span>4</span><small>Brief</small></div>
+          </div>
+        </div>
+        <div id="journey-content"></div>
+      </section>
+    </main>
+    <div class="toast" id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

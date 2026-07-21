@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+*.pem
+data/
+.git/
+.gitignore
+node_modules/
+DEMO-SCRIPT.md
+README.md

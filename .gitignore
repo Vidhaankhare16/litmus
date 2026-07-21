@@ -1,0 +1,9 @@
+# Credentials. Never commit these.
+.env
+.env.local
+*.pem
+
+# Local demo material and runtime state.
+DEMO-SCRIPT.md
+data/
+node_modules/
