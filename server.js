@@ -29,29 +29,37 @@ const repoMemoryPath = path.join(dataDir, 'repo-memory.json');
 const memorySchemaVersion = 2;
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 
-/* ---------------- OpenAI ---------------- */
+/* ---------------- Model gateway: Otari ---------------- */
 
-async function openAIJson({ name, schema, system, user, effort = 'medium' }) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
-  const response = await fetch('https://api.openai.com/v1/responses', {
+// Every model call goes through Otari (https://otari.ai), an OpenAI-compatible gateway.
+// Chat Completions with a strict json_schema works on the open-weight models Litmus uses.
+const otariBaseUrl = (process.env.OTARI_BASE_URL || 'https://api.otari.ai/api/v1').replace(/\/$/, '');
+
+async function otariJson({ name, schema, system, user, effort = 'medium' }) {
+  if (!process.env.OTARI_API_KEY) throw new Error('OTARI_API_KEY is not configured');
+  const response = await fetch(`${otariBaseUrl}/chat/completions`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': `Bearer ${process.env.OTARI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-5.6',
-      reasoning: { effort: process.env.OPENAI_REASONING_EFFORT || effort },
-      input: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      text: { format: { type: 'json_schema', name, strict: true, schema } }
+      // gpt-oss-120b is open-weight; OpenRouter serves it with room for Litmus's large repository context.
+      model: process.env.OTARI_MODEL || 'openrouter:openai/gpt-oss-120b',
+      reasoning_effort: process.env.OTARI_REASONING_EFFORT || effort,
+      max_tokens: 8000,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      response_format: { type: 'json_schema', json_schema: { name, strict: true, schema } }
     })
   });
   if (!response.ok) {
-    const message = response.status === 401 ? 'OpenAI authentication failed. Replace OPENAI_API_KEY with a valid key.'
-      : response.status === 429 ? 'OpenAI rate limit or billing quota reached. Check API billing and retry.'
-      : `OpenAI request failed with status ${response.status}.`;
-    throw new Error(message);
+    const requestId = response.headers.get('otari-request-id');
+    const detail = await response.json().then(body => body.detail || body.error?.message || '').catch(() => '');
+    const message = response.status === 401 ? 'Otari authentication failed. Replace OTARI_API_KEY with a valid key.'
+      : response.status === 429 ? 'Otari or the upstream provider rate-limited this request. Wait a moment and retry.'
+      : `Otari request failed with status ${response.status}${detail ? `: ${String(detail).slice(0, 300)}` : '.'}`;
+    throw new Error(requestId ? `${message} (Otari request ${requestId})` : message);
   }
   const payload = await response.json();
-  const raw = payload.output_text || payload.output?.flatMap(item => item.content || []).find(item => item.type === 'output_text')?.text;
-  if (!raw) throw new Error('OpenAI response did not include structured text');
+  const raw = payload.choices?.[0]?.message?.content;
+  if (!raw) throw new Error('The model response did not include structured text');
   return JSON.parse(raw);
 }
 
@@ -436,7 +444,7 @@ async function contributorMatch(username) {
   if (!shortlist.length) {
     return { source: 'live', profile: { username: profile.user.login, summary: 'Your public repositories were analyzed, but no suitable unclaimed issue candidates are available right now. Try again in a minute — GitHub search results rotate quickly.', skills: profile.topLanguages }, matches: [] };
   }
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.OTARI_API_KEY) {
     return {
       source: 'heuristic',
       profile: { username: profile.user.login, summary: `Strongest public evidence: ${profile.topLanguages.join(', ') || 'general programming'}.`, skills: profile.topLanguages },
@@ -448,7 +456,7 @@ async function contributorMatch(username) {
     skills: { type: 'array', minItems: 3, maxItems: 6, items: { type: 'string' } },
     matches: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['index', 'score', 'why'], properties: { index: { type: 'integer', minimum: 0 }, score: { type: 'integer', minimum: 1, maximum: 100 }, why: { type: 'string' } } } }
   } };
-  const ranked = await openAIJson({
+  const ranked = await otariJson({
     name: 'litmus_contributor_match', schema, effort: 'low',
     system: 'You match an open-source contributor to real open issues using only demonstrated public evidence. Rules: (1) Prefer issues the contributor is genuinely equipped to solve — language and domain must match their actual repositories, not their bio. (2) Prefer under-served repositories and issues marked invited:true, where a maintainer registered the repo and asked for help. (3) Each "why" must cite a specific piece of the contributor evidence (a repo, language, or topic) and say why THIS issue fits — never generic praise. (4) Do not invent expertise. Return the best 3-6 matches.',
     user: JSON.stringify({ contributor_evidence: profileFacts, candidate_issues: shortlist.map((candidate, index) => ({ index, repo: candidate.repo, title: candidate.title, description: candidate.description, labels: candidate.labels, language: candidate.language, stars: candidate.stars, comments: candidate.comments, invited: Boolean(candidate.invited), heuristic_score: candidate.heuristicScore })) })
@@ -517,7 +525,7 @@ async function orientIssue(repoInput, issueNumber, username) {
     source: 'heuristic'
   };
   let orientation = heuristic;
-  if (process.env.OPENAI_API_KEY) {
+  if (process.env.OTARI_API_KEY) {
     try {
       const schema = { type: 'object', additionalProperties: false, required: ['walkthrough', 'areas', 'constraints', 'firstStep'], properties: {
         walkthrough: { type: 'string' },
@@ -525,7 +533,7 @@ async function orientIssue(repoInput, issueNumber, username) {
         constraints: { type: 'array', maxItems: 4, items: { type: 'object', additionalProperties: false, required: ['title', 'detail', 'evidence'], properties: { title: { type: 'string' }, detail: { type: 'string' }, evidence: { type: 'string' } } } },
         firstStep: { type: 'string' }
       } };
-      const result = await openAIJson({
+      const result = await otariJson({
         name: 'litmus_orientation', schema, effort: 'low',
         system: 'You are a senior maintainer giving a newcomer a 60-second tour of the code they are about to touch, before they write any code. Use ONLY the provided repository context. The walkthrough is 2-3 sentences describing what part of the system this issue lives in and how the pieces connect. Each area note says what that file does and why it matters for THIS issue. Each constraint is a non-obvious thing that would trip up a newcomer (a lock discipline, an ordering requirement, an API that must not change) with file:line evidence from the provided context. Never invent files or constraints. If context is thin, say less rather than guessing.',
         user: `ISSUE + REPOSITORY CONTEXT:\n${contextPrompt(context)}`
@@ -555,7 +563,7 @@ const analysisSchema = {
 };
 
 async function analyzePlan({ repo: repoInput, issueNumber, plan, username, tone = 'mentor' }) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('Live plan analysis requires OPENAI_API_KEY');
+  if (!process.env.OTARI_API_KEY) throw new Error('Live plan analysis requires OTARI_API_KEY');
   const context = await collectContext(repoInput, issueNumber, plan);
   const store = readStore();
   const existingClaim = store[claimKey(context.repo, issueNumber)] || {};
@@ -563,7 +571,7 @@ async function analyzePlan({ repo: repoInput, issueNumber, plan, username, tone 
   const previousFeedback = previousPlans.length ? previousPlans[previousPlans.length - 1] : null;
   const system = `You are a senior maintainer reviewing a contributor's PLANNED approach BEFORE code is written. Help genuine contributors succeed and catch approach-level problems while they are cheap to fix.\n\nTHE SPECIFICITY TEST: Every point MUST depend on a fact visible only in the provided repository context. If it could be said without reading this repository, omit it. Generic advice is forbidden. Cite path, symbol, and line range in evidence.\n\n${previousFeedback ? 'This is a REVISED plan. The contributor already received the previous feedback included in the payload. In revision_note, state specifically whether the revision addresses each earlier point, partially addresses it, or ignores it. Do not repeat points the revision has genuinely resolved.' : 'This is the first submission; set revision_note to an empty string.'}\n\nDo not infer AI use, skill level, intent, or trustworthiness. Assess only compatibility between the plan and repository evidence. If evidence is ambiguous or the plan is sound, return zero points. Do not invent problems. Tone: ${tone === 'gatekeeper' ? 'terse, factual, peer-to-peer' : 'warm, constructive, and teaching'}.`;
   const user = `CONTRIBUTOR PLAN${previousFeedback ? ' (REVISION ' + (previousPlans.length + 1) + ')' : ''}:\n${plan}\n\n${previousFeedback ? `PREVIOUS PLAN:\n${previousFeedback.plan}\n\nPREVIOUS FEEDBACK POINTS:\n${JSON.stringify(previousFeedback.points || [])}\n\n` : ''}REPOSITORY CONTEXT:\n${contextPrompt(context)}`;
-  const result = await openAIJson({ name: 'litmus_plan_review', schema: analysisSchema, system, user });
+  const result = await otariJson({ name: 'litmus_plan_review', schema: analysisSchema, system, user });
   const planRecord = {
     plan, submittedAt: new Date().toISOString(),
     soundness: result.plan_soundness, needsResponse: result.needs_contributor_response,
@@ -648,8 +656,8 @@ async function analyzePullRequest(prUrl, expectedIssue = null) {
   const trail = planningTrail(claim, pull.user?.login);
   const drift = computeDrift(claim, changedFiles, pull.additions || 0, pull.deletions || 0);
 
-  if (!process.env.OPENAI_API_KEY) {
-    return { source: 'heuristic', repo, number, url: pull.html_url, author: pull.user?.login, title: pull.title, structuralRisk, planningTrail: trail, drift, summary: pull.title, alignment: 'unclear', verdict: trail.respondedToFeedback ? 'strong_signal' : trail.hasPlan ? 'needs_review' : 'weak_signal', riskAreas: [], reviewFocus: 'Configure OPENAI_API_KEY for a full GPT-grounded brief.', memory: memorySummary(memory) };
+  if (!process.env.OTARI_API_KEY) {
+    return { source: 'heuristic', repo, number, url: pull.html_url, author: pull.user?.login, title: pull.title, structuralRisk, planningTrail: trail, drift, summary: pull.title, alignment: 'unclear', verdict: trail.respondedToFeedback ? 'strong_signal' : trail.hasPlan ? 'needs_review' : 'weak_signal', riskAreas: [], reviewFocus: 'Configure OTARI_API_KEY for a full model-grounded brief.', memory: memorySummary(memory) };
   }
   const schema = { type: 'object', additionalProperties: false, required: ['summary', 'alignment', 'verdict', 'trailAssessment', 'riskAreas', 'reviewFocus'], properties: {
     summary: { type: 'string' },
@@ -659,7 +667,7 @@ async function analyzePullRequest(prUrl, expectedIssue = null) {
     riskAreas: { type: 'array', maxItems: 3, items: { type: 'string' } },
     reviewFocus: { type: 'string' }
   } };
-  const result = await openAIJson({
+  const result = await otariJson({
     name: 'litmus_trust_brief', schema,
     system: 'Create a compact maintainer trust brief for a pull request. Ground everything in the provided evidence: the diff, the issue, retained repository memory, the Litmus planning trail, and the drift check.\n\nVerdict rubric — apply it strictly:\n- strong_signal: scoped diff matching a plan the contributor pressure-tested (especially if they revised after feedback), touches expected files, includes or updates tests when the repo has them.\n- needs_review: genuine but with open questions — moderate drift, missing tests, or a first-submission plan with unaddressed minor gaps.\n- weak_signal: the change cannot explain itself — no planning trail AND unclear description, or the diff contradicts the stated plan, or it sprawls across unrelated high-risk modules.\n\nsummary: exactly what the change does, two sentences max. trailAssessment: one sentence on what the planning trail shows (revised-after-feedback is the strongest signal; silence after questions is a warning; no trail is neutral-to-weak, not damning by itself). Never claim to detect AI authorship — judge only whether the work can explain itself.',
     user: JSON.stringify({ expected_issue: expectedIssue, repository_memory: memorySummary(memory), planning_trail: trail, drift_check: drift, pull_request: { number: pull.number, title: pull.title, body: pull.body || '', author: pull.user?.login, additions: pull.additions, deletions: pull.deletions, changed_files: changedFiles } })
@@ -723,17 +731,17 @@ async function priorityWorkspace(repoInput, focus) {
   const storeUpdate = readStore();
   if (storeUpdate[`repo:${repo}`]) { storeUpdate[`repo:${repo}`].focus = focus || storeUpdate[`repo:${repo}`].focus || ''; writeStore(storeUpdate); }
   if (!issueCandidates.length && !prCandidates.length) return { source: 'live', repo, focus: focus || '', brief: 'There are no open issues or pull requests in this repository right now.', issues: [], pullRequests: [], memory: memorySummary(memory), crossPrRisks: [] };
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.OTARI_API_KEY) {
     const heuristicIssues = issueCandidates.map(issue => ({ ...issue, priority: Math.min(95, 40 + issue.structuralRisk / 2 + Math.min(20, issue.comments * 4)), why: issue.structuralRisk ? 'Touches a high-dependency module in repo memory.' : 'Open issue ranked by activity.' })).sort((a, b) => b.priority - a.priority).slice(0, 5);
     const heuristicPulls = prCandidates.map(pr => ({ ...pr, priority: Math.min(95, (pr.draft ? 20 : 50) + pr.structuralRisk / 2 + (pr.planningTrail?.respondedToFeedback ? 20 : 0)), why: pr.planningTrail?.respondedToFeedback ? 'Contributor pressure-tested their plan through Litmus before coding.' : pr.draft ? 'Draft — can wait.' : 'Ready for review.' })).sort((a, b) => b.priority - a.priority).slice(0, 5);
-    return { source: 'heuristic', repo, focus: focus || '', brief: 'Heuristic ranking (structural risk + planning trail). Configure OPENAI_API_KEY for intent-aware GPT ranking.', issues: heuristicIssues, pullRequests: heuristicPulls, memory: memorySummary(memory), crossPrRisks };
+    return { source: 'heuristic', repo, focus: focus || '', brief: 'Heuristic ranking (structural risk + planning trail). Configure OTARI_API_KEY for intent-aware model ranking.', issues: heuristicIssues, pullRequests: heuristicPulls, memory: memorySummary(memory), crossPrRisks };
   }
   const schema = { type: 'object', additionalProperties: false, required: ['brief', 'issues', 'pullRequests'], properties: {
     brief: { type: 'string' },
     issues: { type: 'array', maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['number', 'priority', 'why'], properties: { number: { type: 'integer' }, priority: { type: 'integer', minimum: 0, maximum: 100 }, why: { type: 'string' } } } },
     pullRequests: { type: 'array', maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['number', 'priority', 'why'], properties: { number: { type: 'integer' }, priority: { type: 'integer', minimum: 0, maximum: 100 }, why: { type: 'string' } } } }
   } };
-  const ranked = await openAIJson({
+  const ranked = await otariJson({
     name: 'litmus_maintainer_focus', schema, effort: 'low',
     system: 'You prioritize a maintainer\'s workspace from repository evidence and the maintainer\'s stated intent. Rank issues and PRs separately. Use the full 0-100 priority scale (95+ = drop everything and review first, 50 = normal queue, <30 = can wait); never return rank positions like 1, 2, 3. Weigh: (1) the maintainer\'s focus — work matching it moves up sharply; (2) structural risk from repo memory — changes to high-dependency modules need earlier eyes; (3) Litmus planning trails on PRs — a contributor who revised their plan after feedback earns priority review, one who went silent after questions loses it; (4) cross-PR collisions — colliding PRs should be reviewed together and early. Each "why" cites concrete evidence. The brief is 2-3 sentences: what to do first and why. If the focus doesn\'t match any open work, say so plainly in the brief.',
     user: JSON.stringify({ repository: repo, maintainer_focus: focus || 'Prioritize clear, high-impact work with manageable review risk.', repository_memory: memorySummary(memory), open_issues: issueCandidates, open_pull_requests: prCandidates.map(pr => ({ ...pr, changedFiles: pr.changedFiles.slice(0, 15) })), cross_pr_collisions: crossPrRisks })
@@ -820,7 +828,7 @@ function markdownBotAssessment(assessment, issueNumber) {
 async function botAsk(repoInput, issueNumber, { post = true } = {}) {
   const repo = parseRepo(repoInput);
   if (post) assertWriteAllowed(repo);
-  if (!process.env.OPENAI_API_KEY) throw new Error('Generating a screening question requires OPENAI_API_KEY');
+  if (!process.env.OTARI_API_KEY) throw new Error('Generating a screening question requires OTARI_API_KEY');
   const context = await collectContext(repo, issueNumber, '');
   const schema = { type: 'object', additionalProperties: false, required: ['question', 'why_this_matters', 'evidence', 'ideal_answer_covers'], properties: {
     question: { type: 'string' },
@@ -828,7 +836,7 @@ async function botAsk(repoInput, issueNumber, { post = true } = {}) {
     evidence: { type: 'string' },
     ideal_answer_covers: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } }
   } };
-  const question = await openAIJson({
+  const question = await otariJson({
     name: 'litmus_bot_question', schema,
     system: 'You are a maintainer asking ONE question of someone who just volunteered for an issue, before they write code.\n\nThe question must be answerable only by someone who actually looked at this repository. Anchor it in a specific constraint visible in the provided code — a non-reentrant lock, a background thread touching the same state, an ordering requirement, a public signature that cannot change. Someone who read the code can answer it in two sentences; someone who did not cannot bluff it.\n\nRules: exactly one question, plainly worded, no jargon for its own sake, never a quiz with a single "correct" trivia answer, never condescending. Do not ask them to restate the issue. `evidence` is one `path:line` reference from the provided context. `ideal_answer_covers` lists what a good answer would touch on — this is for the maintainer, not shown to the contributor.',
     user: `An open-source contributor has volunteered for this issue. Ask them the one question that would save the most wasted work.\n\n${contextPrompt(context)}`
@@ -869,7 +877,7 @@ async function botAssess(repoInput, issueNumber, { post = true } = {}) {
     follow_up: { type: 'string' },
     maintainer_note: { type: 'string' }
   } };
-  const result = await openAIJson({
+  const result = await otariJson({
     name: 'litmus_bot_assessment', schema,
     system: 'You asked a contributor one repository-grounded question. Judge their reply against the actual code.\n\nVerdicts:\n- demonstrated_understanding: the reply engages with the real constraint — naming the mechanism, or proposing a concrete approach that respects it. Saying "I had not considered that, here is how I would handle it now" counts fully; adjusting when shown a constraint is the strongest signal there is.\n- partial: engaged genuinely but missed or hand-waved the core constraint.\n- non_responsive: generic enthusiasm, restates the issue, lists technologies, or answers a question nobody asked. Confident-sounding text that never touches the specific code is non_responsive no matter how polished.\n\n`assessment` is addressed TO the contributor, warm and plain, two or three sentences, and must reference something specific they said. If they were wrong, say what the code actually does. `follow_up` is one further question, or an empty string if none is needed. `maintainer_note` is one line for the maintainer only.\n\nNever speculate about whether a human or a tool wrote the reply. Judge only whether it engages with this repository.',
     user: `THE QUESTION LITMUS ASKED:\n${record.question.question}\n\nWHAT A GOOD ANSWER WOULD COVER (internal):\n${JSON.stringify(record.question.ideal_answer_covers)}\n\nREPLIES RECEIVED:\n${JSON.stringify(replies)}\n\nREPOSITORY CONTEXT:\n${contextPrompt(context)}`
@@ -950,7 +958,7 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
     if (req.method === 'OPTIONS') { res.writeHead(204, responseHeaders('application/json; charset=utf-8')); return res.end(); }
-    if (req.method === 'GET' && url.pathname === '/api/health') return respond(res, 200, { ok: true, product: 'litmus', mode: process.env.OPENAI_API_KEY ? 'live' : 'configuration_required', githubToken: Boolean(process.env.GITHUB_TOKEN), githubApp: appConfigured(), port });
+    if (req.method === 'GET' && url.pathname === '/api/health') return respond(res, 200, { ok: true, product: 'litmus', mode: process.env.OTARI_API_KEY ? 'live' : 'configuration_required', githubToken: Boolean(process.env.GITHUB_TOKEN), githubApp: appConfigured(), port });
     if (req.method === 'GET' && url.pathname === '/api/bot/identity') return respond(res, 200, await botIdentity());
     if (req.method === 'POST' && url.pathname === '/api/contributor-match') {
       const body = JSON.parse(await readBody(req));
