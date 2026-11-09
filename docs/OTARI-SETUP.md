@@ -25,9 +25,15 @@ Check: `npm run smoke` prints one line per role.
 
 | Policy name | Main model | If unavailable, use | Why |
 |---|---|---|---|
-| `litmus-scout` | `groq:openai/gpt-oss-20b` | `openrouter:openai/gpt-oss-20b` | fast ranking and screening |
-| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `openrouter:openai/gpt-oss-120b` | deep code review |
-| `litmus-researcher` | `openrouter:moonshotai/kimi-k2-0905` | `openrouter:openai/gpt-oss-120b` | tool use |
+| `litmus-scout` | `groq:openai/gpt-oss-20b` | `openrouter:openai/gpt-oss-20b`, then `nvidia/nemotron-3.5-super-vl-free` | fast ranking and screening |
+| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `openrouter:openai/gpt-oss-120b`, then `nvidia/nemotron-3-ultra-free` | deep code review |
+| `litmus-researcher` | `openrouter:moonshotai/kimi-k2-0905` | `openrouter:openai/gpt-oss-120b`, then `nvidia/nemotron-3-ultra-free` | tool use |
+
+The last fallback in each row is a free OpenRouter model. The OpenRouter account is on the free
+tier with $0 credit (2026-11-09: `total_credits 0`, usage $0.023). Paid OpenRouter models still
+answered at that point, but OpenRouter can start refusing them at any time. The free models keep
+every role working if that happens. Free models are limited to 50 requests a day per account and
+take 3–15 s.
 
 Groq's free tier allows about 8k tokens per minute. A Litmus plan check sends about 22k tokens
 of repository context, so Groq answers `413` and Otari fails over to OpenRouter. You get a real
