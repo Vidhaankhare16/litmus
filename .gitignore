@@ -1,6 +1,7 @@
 # Credentials. Never commit these.
 .env
 .env.local
+.env.bak-*
 *.pem
 
 # Local demo and submission material, plus runtime state.

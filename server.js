@@ -948,7 +948,7 @@ async function botAssess(repoInput, issueNumber, { post = false, previewReply = 
 
 /* ---------------- Otari status: rubric features with live evidence ---------------- */
 
-const otariHttpStatus = { guardrail_violation: 403, budget_exceeded: 429, end_user_budget: 429, end_user_limit_reached: 403, end_user_budget_not_allowed: 403, insufficient_funds: 402, pricing_required: 402, rate_limited: 429, not_configured: 503, auth: 502 };
+const otariHttpStatus = { guardrail_violation: 403, budget_exceeded: 429, end_user_budget: 429, end_user_limit_reached: 403, end_user_budget_not_allowed: 403, insufficient_funds: 402, pricing_required: 402, rate_limited: 429, not_configured: 503, auth: 502, not_service_key: 409, invalid_request: 400 };
 let statusCache = null;
 
 async function otariStatus({ probe = false } = {}) {
@@ -1110,6 +1110,15 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/trail') {
       const { entries, flags } = contributorTrail(url.searchParams.get('username'));
       return respond(res, 200, { username: url.searchParams.get('username') || '', trail: entries, guardrailEvents: flags });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/otari/allowance') {
+      // Maintainer action: put a contributor on the trial or the standard end-user budget of Litmus's service key.
+      const body = JSON.parse(await readBody(req));
+      const login = String(body.username || '').trim().replace(/^@/, '');
+      if (!/^[a-zA-Z0-9-]{1,39}$/.test(login)) return respond(res, 400, { error: 'Enter a valid GitHub username' });
+      const tier = body.tier === 'standard' ? 'standard' : 'trial';
+      const budgetId = otari.env(tier === 'trial' ? 'LITMUS_BUDGET_TRIAL' : 'LITMUS_BUDGET_CONTRIBUTOR');
+      return respond(res, 200, { tier, ...(await otari.setEndUserBudget(login, 'contributor', budgetId)) });
     }
     if (req.method === 'GET' && url.pathname === '/api/otari/activity') {
       return respond(res, 200, { calls: otari.recentActivity(Math.min(200, Number(url.searchParams.get('limit')) || 200)) });

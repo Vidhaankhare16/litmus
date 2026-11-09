@@ -13,7 +13,8 @@
 const base = (process.env.LITMUS_URL || `http://localhost:${process.env.LITMUS_PORT || 4173}`).replace(/\/$/, '');
 const repo = process.env.DEMO_REPO || 'Vidhaankhare16/Google-Gen-AI';
 const issueNumber = Number(process.env.DEMO_ISSUE || 1);
-const deadlockPlan = 'When storage reaches max_documents, inside store_document I will call self.delete_document(oldest_id) to evict the oldest entry by created_at, then insert the new document and bump an evicted counter that get_stats() reports. I will add a test that fills the store past the cap.';
+// The link gives the researcher role something to read with Otari web fetch (Python's Lock semantics).
+const deadlockPlan = 'When storage reaches max_documents, inside store_document I will call self.delete_document(oldest_id) to evict the oldest entry by created_at, then insert the new document and bump an evicted counter that get_stats() reports. I checked the locking docs at https://docs.python.org/3/library/threading.html#lock-objects. I will add a test that fills the store past the cap.';
 
 async function call(method, pathname, body) {
   const response = await fetch(`${base}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
@@ -66,6 +67,9 @@ async function budget() {
     console.log(`DRY RUN: Litmus's Otari key is not a service key yet (end-user mode: ${status.data.endUserMode}).\nCreate the service key with the contributor-daily and maintainer-daily end-user budgets (docs/OTARI-SETUP.md), put it in OTARI_API_KEY, restart, then rerun.\nThe run would: send plan checks for @demo-heavy until Otari answers 403 budget_exceeded for that end user (shown as a friendly allowance message), then send one for @demo-light, which succeeds.`);
     return;
   }
+  // Put @demo-heavy on the small trial allowance first, so the refusal comes after a couple of checks.
+  const trial = await call('POST', '/api/otari/allowance', { username: 'demo-heavy', tier: 'trial' });
+  console.log(trial.status === 200 ? `@demo-heavy is on the trial allowance (Otari end user ${trial.data.endUser}, budget ${trial.data.budgetId}).` : `Could not set the trial allowance (HTTP ${trial.status}: ${trial.data.error}). Continuing on the default contributor budget.`);
   const tries = Number(process.env.DEMO_BUDGET_TRIES || 6);
   for (let attempt = 1; attempt <= tries; attempt += 1) {
     const { status: code, data } = await plan('demo-heavy');
