@@ -1000,6 +1000,7 @@ function liveEvidence() {
   const budgetRefusals = calls.filter(call => ['budget_exceeded', 'end_user_budget'].includes(call.error?.kind));
   const endUserRefusals = calls.filter(call => ['end_user_budget', 'end_user_limit_reached', 'end_user_budget_not_allowed'].includes(call.error?.kind));
   const totalCost = ok.reduce((sum, call) => sum + (call.costUsd || 0), 0);
+  const saverCalls = calls.filter(call => call.budgetSaver);
   const keyLimits = statusCache?.value?.keyBudget?.limits || [];
   const status = (inUse, ready) => inUse ? 'in_use' : ready ? 'ready' : 'needs_setup';
   const toolsState = statusCache?.value?.tools || {};
@@ -1017,9 +1018,9 @@ function liveEvidence() {
     { id: 'per_user', title: 'Per-user budgets', points: 10, status: status(serviceCalls.length > 0), count: new Set(userCalls.map(call => call.endUser)).size,
       evidence: serviceCalls.length ? `${new Set(serviceCalls.map(call => call.endUser)).size} end users billed separately via the service key${otari.learned.endUserBudgetSeen ? `, budget ${otari.learned.endUserBudgetSeen}` : ''}; ${endUserRefusals.length} end-user refusals handled.` : userCalls.length ? `${new Set(userCalls.map(call => call.endUser)).size} people attributed by request tag only: this key is not a service key, so Otari refuses the user field.` : 'No attributed calls yet.',
       where: 'otari.js endUserFields', lastRequestId: last(serviceCalls)?.requestId || last(userCalls)?.requestId || null },
-    { id: 'budgets', title: 'Budgets & spending limits', points: 10, status: status(keyLimits.length > 0 && ok.length > 0 || budgetRefusals.length > 0), count: budgetRefusals.length,
-      evidence: `${ok.length} calls cost $${totalCost.toFixed(6)} (usage.cost_usd). ${keyLimits.length ? `Key caps: ${keyLimits.map(limit => `${limit.scope} ${limit.remaining_usd ?? '?'} of ${limit.limit_usd ?? '?'} USD left`).join(', ')}.` : 'No spend ceiling on this key yet.'} ${budgetRefusals.length} budget refusals turned into friendly messages.`,
-      where: 'otari.js classify', lastRequestId: last(budgetRefusals)?.requestId || null },
+    { id: 'budgets', title: 'Budgets & spending limits', points: 10, status: status(keyLimits.length > 0 && ok.length > 0 || budgetRefusals.length > 0 || saverCalls.length > 0), count: budgetRefusals.length + saverCalls.length,
+      evidence: `${ok.length} calls cost $${totalCost.toFixed(6)} (usage.cost_usd). ${keyLimits.length ? `Key caps: ${keyLimits.map(limit => `${limit.scope} ${limit.remaining_usd ?? '?'} of ${limit.limit_usd ?? '?'} USD left`).join(', ')}.` : 'No spend ceiling on this key yet.'} Budget saver (reads GET /key/budget, drops paid tools and lowers effort when little is left): ${saverCalls.length ? `engaged on ${saverCalls.length} calls, last at $${last(saverCalls).budgetSaver.remainingUsd} left` : `idle (engages at ${otari.env('LITMUS_BUDGET_SAVER_USD') ? `$${otari.env('LITMUS_BUDGET_SAVER_USD')}` : `${Math.round(Number(otari.env('LITMUS_BUDGET_SAVER_FRACTION', '0.2')) * 100)}% of the cap`} left)`}. ${budgetRefusals.length} budget refusals turned into friendly messages.`,
+      where: 'otari.js budgetSaver + classify', lastRequestId: last(saverCalls)?.requestId || last(budgetRefusals)?.requestId || null },
     { id: 'web', title: 'Web search / web fetch', points: 10, status: status(byType('web_fetch').length + byType('web_search').length > 0, toolsState.web_fetch?.available), count: byType('web_fetch').length + byType('web_search').length,
       evidence: byType('web_fetch').length + byType('web_search').length ? `${byType('web_fetch').length} fetches, ${byType('web_search').length} searches run by Otari for the researcher role.` : `Researcher role declares otari_web_fetch${otari.isOn('LITMUS_WEB_SEARCH') ? ' + otari_web_search' : ''}; Otari reports ${toolsState.web_fetch ? (toolsState.web_fetch.available ? 'available' : toolsState.web_fetch.reason) : 'unknown'}.`,
       where: 'otari.js research', lastRequestId: last([...byType('web_fetch'), ...byType('web_search')])?.requestId || null },

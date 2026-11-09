@@ -80,6 +80,7 @@ function provenanceHtml(info, label = '') {
     <span class="${info.fallback ? 'prov-fallback' : ''}">fallback: ${info.fallback ? `yes · ${info.attempts} attempts` : 'no'}</span>
     <span>${escapeHtml(info.outputMode || '')}</span>
     ${info.policyMissing ? `<span class="chip amber" title="Otari did not recognise ${escapeHtml(info.policyMissing.policy)}">routing policy not configured → ${escapeHtml(info.policyMissing.fallbackModel)}</span>` : ''}
+    ${info.budgetSaver ? `<span class="chip amber" title="GET /key/budget: ${escapeHtml(info.budgetSaver.scope || 'key')} cap ${money(info.budgetSaver.limitUsd)}, saver engages at ${money(info.budgetSaver.thresholdUsd)}">budget saver · ${money(info.budgetSaver.remainingUsd)} left${info.effortSent ? ` · effort ${escapeHtml(info.effortSent)}` : ''}</span>` : ''}
     ${guardrailChip(info.guardrail)}${tools}
     <span class="prov-id">req ${escapeHtml(shortId(info.requestId))}</span>
   </div>`;
@@ -89,7 +90,7 @@ function groundingHtml(grounding, title) {
   if (!grounding) return '';
   const calls = grounding.toolCalls || [];
   if (grounding.skipped) return `<div class="grounding skipped"><strong>${escapeHtml(title)}:</strong> skipped — ${escapeHtml(grounding.reason || 'not available')}${(grounding.skippedTools || []).map(item => ` <span class="chip dim">${escapeHtml(item.family)}: ${escapeHtml(item.kind)}</span>`).join('')}</div>`;
-  return `<div class="grounding"><strong>${escapeHtml(title)}</strong>${calls.length ? ` · ${calls.length} tool call${calls.length === 1 ? '' : 's'} run by Otari` : ''}
+  return `<div class="grounding"><strong>${escapeHtml(title)}</strong>${calls.length ? ` · ${calls.length} tool call${calls.length === 1 ? '' : 's'} run by Otari` : ''}${(grounding.skippedTools || []).map(item => ` <span class="chip ${item.kind === 'budget_saver' ? 'amber' : 'dim'}" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.family)} skipped: ${escapeHtml(item.kind === 'budget_saver' ? 'budget saver' : item.kind)}</span>`).join('')}
     <p>${escapeHtml(grounding.text || '')}</p>
     ${calls.length ? `<ul>${calls.map(call => `<li><span class="chip purple">${escapeHtml(call.type)}</span> ${escapeHtml(call.url || call.query || `${call.server || ''} ${call.name || ''}`)} · ${escapeHtml(call.status)}${call.exitCode !== null && call.exitCode !== undefined ? ` · exit ${call.exitCode}` : ''}${call.stdout ? `<pre>${escapeHtml(call.stdout.slice(0, 600))}</pre>` : ''}</li>`).join('')}</ul>` : ''}
     ${provenanceHtml(grounding.otari)}</div>`;
