@@ -80,6 +80,7 @@ Requires Node 22. There is nothing to install.
 
 ```bash
 cp .env.example .env      # add OTARI_API_KEY, OTARI_BASE_URL, GITHUB_TOKEN
+npm run verify            # checks every Otari dashboard step live; --write fills .env with the ids it finds
 npm run smoke             # one tiny call per role: provider, model, fallback, cost, request id
 npm start                 # http://localhost:4173  (Otari view: /#otari)
 npm test                  # offline self-test of otari.js against a mock gateway
