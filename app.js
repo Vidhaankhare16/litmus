@@ -34,11 +34,11 @@ async function apiCall(path, options) {
       const isJson = (response.headers.get('content-type') || '').includes('application/json');
       if (!isJson) { plainTextResponse = true; continue; }
       const data = raw ? JSON.parse(raw) : {};
-      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      if (!response.ok) { const failure = new Error(data.error || `Request failed (${response.status})`); failure.otari = data.otari || null; throw failure; }
       return data;
     } catch (error) {
       networkError = error;
-      if (error.message && !/Failed to fetch|NetworkError/i.test(error.message)) throw error;
+      if (error.otari || (error.message && !/Failed to fetch|NetworkError/i.test(error.message))) throw error;
     }
   }
   if (plainTextResponse || networkError) throw new Error('The Litmus API is not running at this address. Start it with `node server.js`, then open http://localhost:4173.');
@@ -46,7 +46,171 @@ async function apiCall(path, options) {
 }
 async function request(path, body) { return apiCall(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
 
-function enterRole(role) { showView(`${role}-view`); if (role === 'maintainer') loadRegisteredRepos(); }
+function enterRole(role) {
+  if (role === 'otari') return openOtari();
+  stopOtariRefresh();
+  showView(`${role}-view`);
+  if (role === 'maintainer') loadRegisteredRepos();
+}
+
+/* ================= Otari: provenance, refusals, gateway panel ================= */
+
+const budgetKinds = ['budget_exceeded', 'end_user_budget', 'end_user_limit_reached', 'end_user_budget_not_allowed', 'insufficient_funds', 'rate_limited'];
+const money = value => value === null || value === undefined ? '—' : `$${Number(value).toFixed(value < 0.01 ? 6 : 4)}`;
+const seconds = ms => ms ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : '—';
+const shortId = id => id ? String(id).replace(/^req_/, '').slice(0, 8) : '—';
+
+function guardrailChip(guardrail) {
+  if (!guardrail) return '';
+  const verdict = (guardrail.verdicts || [])[0];
+  if (!verdict) return `<span class="chip dim" title="Otari returned no Otari-Guardrails header">guardrail: requested</span>`;
+  if (verdict.status === 'evaluated') return verdict.valid === false ? `<span class="chip rose">guardrail: flagged</span>` : `<span class="chip teal">guardrail: clean${verdict.score !== null && verdict.score !== undefined ? ` · ${Number(verdict.score).toFixed(2)}` : ''}</span>`;
+  return `<span class="chip dim" title="Otari-Guardrails: ${escapeHtml(JSON.stringify(verdict))}">guardrail: ${escapeHtml(verdict.reason === 'not_configured' ? 'not configured on workspace' : verdict.status)}</span>`;
+}
+
+// One line under every AI result: which role, which model actually served it, and Otari's request id.
+function provenanceHtml(info, label = '') {
+  if (!info) return '';
+  const tools = (info.toolCalls || []).map(call => `<span class="chip purple" title="${escapeHtml(call.url || call.query || call.name || '')}">${escapeHtml(call.type)}${call.name ? `:${escapeHtml(call.name)}` : ''} · ${escapeHtml(call.status)}</span>`).join('');
+  return `<div class="provenance" data-activity="${escapeHtml(info.activityId || '')}" title="Open this call in the Otari panel">
+    <span class="prov-role ${escapeHtml(info.role || '')}">${escapeHtml(label || info.role || 'model')}</span>
+    <span>${escapeHtml(info.provider || '?')}:${escapeHtml(info.model || '?')}</span>
+    ${info.isPolicy ? `<span class="chip purple">policy ${escapeHtml(info.requested)}</span>` : ''}
+    <span>${seconds(info.latencyMs)}</span><span>${money(info.costUsd)}</span>
+    <span class="${info.fallback ? 'prov-fallback' : ''}">fallback: ${info.fallback ? `yes · ${info.attempts} attempts` : 'no'}</span>
+    <span>${escapeHtml(info.outputMode || '')}</span>
+    ${info.policyMissing ? `<span class="chip amber" title="Otari did not recognise ${escapeHtml(info.policyMissing.policy)}">routing policy not configured → ${escapeHtml(info.policyMissing.fallbackModel)}</span>` : ''}
+    ${guardrailChip(info.guardrail)}${tools}
+    <span class="prov-id">req ${escapeHtml(shortId(info.requestId))}</span>
+  </div>`;
+}
+
+function groundingHtml(grounding, title) {
+  if (!grounding) return '';
+  const calls = grounding.toolCalls || [];
+  if (grounding.skipped) return `<div class="grounding skipped"><strong>${escapeHtml(title)}:</strong> skipped — ${escapeHtml(grounding.reason || 'not available')}${(grounding.skippedTools || []).map(item => ` <span class="chip dim">${escapeHtml(item.family)}: ${escapeHtml(item.kind)}</span>`).join('')}</div>`;
+  return `<div class="grounding"><strong>${escapeHtml(title)}</strong>${calls.length ? ` · ${calls.length} tool call${calls.length === 1 ? '' : 's'} run by Otari` : ''}
+    <p>${escapeHtml(grounding.text || '')}</p>
+    ${calls.length ? `<ul>${calls.map(call => `<li><span class="chip purple">${escapeHtml(call.type)}</span> ${escapeHtml(call.url || call.query || `${call.server || ''} ${call.name || ''}`)} · ${escapeHtml(call.status)}${call.exitCode !== null && call.exitCode !== undefined ? ` · exit ${call.exitCode}` : ''}${call.stdout ? `<pre>${escapeHtml(call.stdout.slice(0, 600))}</pre>` : ''}</li>`).join('')}</ul>` : ''}
+    ${provenanceHtml(grounding.otari)}</div>`;
+}
+
+// Budget, allowance and guardrail refusals are product states, not crashes.
+function refusalHtml(error, fallbackTitle) {
+  const kind = error.otari?.kind;
+  if (kind === 'guardrail_violation') return `<div class="refusal guardrail"><small>OTARI GUARDRAIL · BLOCKED</small><h2>This text never reached a model.</h2><p>${escapeHtml(error.message)}</p><span class="mono-note">request ${escapeHtml(error.otari.requestId || '—')}</span></div>`;
+  if (budgetKinds.includes(kind)) return `<div class="refusal budget"><small>OTARI · ${escapeHtml(kind.replaceAll('_', ' ').toUpperCase())}</small><h2>${kind === 'rate_limited' ? 'Slow down for a moment.' : 'Today\'s Litmus allowance is used up.'}</h2><p>${escapeHtml(error.message)}</p><span class="mono-note">${error.otari.endUser ? `end user ${escapeHtml(error.otari.endUser)} · ` : ''}${error.otari.retryAfter ? `resets in ${Math.ceil(error.otari.retryAfter / 3600)} h · ` : ''}request ${escapeHtml(error.otari.requestId || '—')}</span></div>`;
+  return `<div class="empty-state"><h2>${escapeHtml(fallbackTitle)}</h2><p>${escapeHtml(error.message)}</p>${error.otari?.requestId ? `<p class="mono-note">Otari request ${escapeHtml(error.otari.requestId)}</p>` : ''}</div>`;
+}
+const toastError = error => toast(error.otari?.requestId ? `${error.message} (req ${shortId(error.otari.requestId)})` : error.message);
+
+function guardrailEventsHtml(events) {
+  if (!events?.length) return '';
+  return `<div class="trail-note warn"><strong>Prompt-injection attempts caught by Otari:</strong><ul class="drift-list">${events.map(event => `<li>${escapeHtml(new Date(event.at).toLocaleString())} · ${escapeHtml(event.task.replaceAll('_', ' '))} · ${escapeHtml(event.mode)}${event.requestId ? ` · req ${escapeHtml(shortId(event.requestId))}` : ''}</li>`).join('')}</ul></div>`;
+}
+
+let otariTimer = null;
+let otariCalls = [];
+function stopOtariRefresh() { clearInterval(otariTimer); otariTimer = null; }
+function openOtari(activityId = null) {
+  showView('otari-view');
+  loadOtari(false, activityId);
+  stopOtariRefresh();
+  otariTimer = setInterval(() => { if (document.querySelector('#otari-view').classList.contains('active')) loadOtari(false); else stopOtariRefresh(); }, 10000);
+}
+
+const statusLabel = { in_use: 'IN USE', ready: 'READY', needs_setup: 'NEEDS DASHBOARD SETUP' };
+function renderOtariStatus(status) {
+  const target = document.querySelector('#otari-status');
+  if (!status.configured) { target.innerHTML = `<div class="empty-state"><h2>Otari is not configured.</h2><p>${escapeHtml(status.message || '')}</p></div>`; return; }
+  const tools = status.tools || {};
+  const toolChip = (name, entry) => `<span class="chip ${entry?.available ? 'teal' : 'dim'}">${name}: ${entry ? (entry.available ? 'available' : escapeHtml(entry.reason || 'off')) : '?'}</span>`;
+  const limits = status.keyBudget?.limits || [];
+  const inUse = (status.features || []).filter(feature => feature.status === 'in_use').length;
+  target.innerHTML = `
+    <section class="otari-strip">
+      <div><small>GATEWAY</small><b class="${status.gateway?.reachable ? 'ok' : 'bad'}">${status.gateway?.reachable ? 'reachable' : 'unreachable'}</b><span>${escapeHtml(status.baseUrl || '')} · ${status.gateway?.modelCount || 0} models · ${status.gateway?.latencyMs || '?'} ms</span></div>
+      <div><small>TOOLS</small><span class="row-chips">${toolChip('web fetch', tools.web_fetch)}${toolChip('web search', tools.web_search)}${toolChip('code exec', tools.code_execution)}</span></div>
+      <div><small>GUARDRAIL SERVICE</small><b class="${status.guardrailService?.available ? 'ok' : 'warn'}">${status.guardrailService?.available ? escapeHtml(status.guardrailService.profiles.join(', ') || 'available') : 'not configured'}</b></div>
+      <div><small>MCP</small><b>${(status.mcp?.workspaceServers || []).length} workspace servers</b><span>${status.mcp?.configured ? `Litmus sends ${escapeHtml([...(status.mcp.configured.ids || []), ...(status.mcp.configured.inline || []).map(server => server.name)].join(', '))}` : 'none configured in Litmus'}</span></div>
+      <div><small>KEY BUDGET</small><b>${limits.length ? limits.map(limit => `${escapeHtml(limit.scope)} ${money(limit.remaining_usd)} left`).join(' · ') : 'no ceiling'}</b><span>${status.totals?.ok || 0} calls · ${money(status.totals?.costUsd)} total</span></div>
+      <div><small>END USERS</small><b>${status.endUserMode === 'service' ? 'service key: billed per person' : status.endUserMode === 'tag' ? 'tag-only (not a service key)' : 'not tested yet'}</b></div>
+    </section>
+    <div class="section-head"><h2>Roles</h2><span>three open-weight models, three jobs</span></div>
+    <div class="otari-roles">${(status.roles || []).map(role => {
+      const probeResult = status.probes?.[role.role];
+      return `<article class="otari-role ${escapeHtml(role.role)}"><small>${escapeHtml(role.role.toUpperCase())}</small>
+        <h3>${escapeHtml(role.requested)}${role.isPolicy ? ' <span class="chip purple">routing policy</span>' : ''}</h3>
+        <p>${escapeHtml(role.purpose)}</p>
+        ${role.policyMissing ? `<div class="callout"><strong>Routing policy not configured.</strong> Otari did not recognise "${escapeHtml(role.requested)}", so Litmus is using ${escapeHtml(role.fallbackModel)} until it exists (req ${escapeHtml(shortId(role.policyMissing.requestId))}).</div>` : ''}
+        <div class="mono-note">served by: ${role.served.length ? role.served.map(escapeHtml).join(', ') : 'no calls yet'} · ${role.calls} calls</div>
+        ${probeResult ? `<div class="mono-note">probe: ${probeResult.ok ? `ok · ${escapeHtml(probeResult.provider)}:${escapeHtml(probeResult.model)} · ${seconds(probeResult.latencyMs)}` : `failed · ${escapeHtml(probeResult.message || probeResult.kind)}`}</div>` : ''}
+      </article>`;
+    }).join('')}</div>
+    <div class="section-head"><h2>Otari features Litmus uses</h2><span>${inUse} of ${(status.features || []).length} in use · counted only from calls Litmus made</span></div>
+    <div class="feature-list">${(status.features || []).map(feature => `
+      <div class="feature-row ${escapeHtml(feature.status)}">
+        <span class="feature-status">${statusLabel[feature.status] || escapeHtml(feature.status)}</span>
+        <div><h3>${escapeHtml(feature.title)} <span class="mono-note">${escapeHtml(String(feature.points))} pts</span></h3><p>${escapeHtml(feature.evidence)}</p>
+        <span class="mono-note">${escapeHtml(feature.where)}${feature.lastRequestId ? ` · last req ${escapeHtml(feature.lastRequestId)}` : ''}</span></div>
+      </div>`).join('')}</div>
+    ${(status.spendByEndUser || []).length ? `<div class="section-head"><h2>Spend by person</h2><span>Otari key usage, grouped by the end_user tag</span></div><div class="spend-list">${status.spendByEndUser.map(row => `<span><b>${escapeHtml(row.endUser || '(untagged)')}</b> ${money(row.cost)} · ${row.requests} req</span>`).join('')}</div>` : ''}`;
+}
+
+function activityRow(call) {
+  const verdict = (call.guardrailVerdicts || [])[0];
+  return `<tr class="${call.status === 'ok' ? '' : 'err'}${call.fallback ? ' fb' : ''}" data-call="${call.id}">
+    <td>${escapeHtml(new Date(call.at).toLocaleTimeString())}</td><td>${escapeHtml(call.task)}</td><td><span class="prov-role ${escapeHtml(call.role)}">${escapeHtml(call.role)}</span></td>
+    <td title="${escapeHtml(call.requested)}">${escapeHtml(call.provider ? `${call.provider}:${call.servedModel}` : call.model)}</td>
+    <td>${call.fallback ? `yes (${call.attempts})` : call.status === 'ok' ? 'no' : '—'}</td><td>${seconds(call.latencyMs)}</td>
+    <td>${call.tokens ? `${call.tokens.prompt}/${call.tokens.completion}` : '—'}</td><td>${money(call.costUsd)}</td>
+    <td>${call.guardrailRequested ? escapeHtml(call.error?.kind === 'guardrail_violation' ? 'BLOCKED' : verdict ? (verdict.status === 'evaluated' ? (verdict.valid === false ? 'flagged' : 'clean') : verdict.reason || verdict.status) : 'sent') : ''}</td>
+    <td>${(call.toolCalls || []).length ? call.toolCalls.map(item => escapeHtml(item.type)).join(', ') : call.toolsDeclared?.length || call.mcpDeclared ? 'declared' : ''}</td>
+    <td>${escapeHtml(call.endUser || '')}</td><td>${call.status === 'ok' ? 'ok' : escapeHtml(call.error?.kind || 'error')}</td><td class="mono">${escapeHtml(shortId(call.requestId))}</td>
+  </tr>`;
+}
+
+function showCall(id) {
+  const call = otariCalls.find(item => String(item.id) === String(id));
+  const drawer = document.querySelector('#otari-drawer');
+  if (!call) { drawer.classList.remove('open'); return; }
+  const rows = [
+    ['Task / role', `${call.task} · ${call.role} (${call.audience || '—'})`], ['Requested', `${call.requested}${call.isPolicy ? ' (routing policy)' : ''}`], ['Sent as model', call.model],
+    ['Served by', call.provider ? `${call.provider} · ${call.servedModel}` : '—'], ['Otari-Fallback / attempts', `${call.fallback} / ${call.attempts ?? '—'}`],
+    ['Latency', `${call.latencyMs} ms (Otari ${call.otariMs ?? '—'} ms, upstream ${call.upstreamMs ?? '—'} ms)`], ['Tokens', call.tokens ? `${call.tokens.prompt} in · ${call.tokens.completion} out · ${call.tokens.reasoning} reasoning` : '—'],
+    ['usage.cost_usd', money(call.costUsd)], ['Structured output', `${call.outputMode || '—'}${call.validation ? ` · validation ${Array.isArray(call.validation) ? call.validation.join('; ') : call.validation}` : ''}`],
+    ['End user', `${call.endUser || '—'} (${call.endUserMode || '—'})${call.endUserBudget ? ` · Otari-End-User-Budget ${call.endUserBudget}` : ''}`],
+    ['Guardrail', call.guardrailRequested ? `${call.guardrailProfile} · ${JSON.stringify(call.guardrailVerdicts || 'no header')}` : 'not requested'],
+    ['Tools declared', [...(call.toolsDeclared || []), ...(call.mcpDeclared ? ['mcp'] : [])].join(', ') || '—'],
+    ['HTTP status', call.httpStatus], ['Otari-Request-ID', call.requestId || '—'], ['Error', call.error ? `${call.error.kind}${call.error.code ? ` (${call.error.code})` : ''}: ${call.error.message}` : '—'], ['Note', call.note || '—']
+  ];
+  drawer.innerHTML = `<div class="drawer-head"><strong>Call #${call.id} · ${escapeHtml(call.task)}</strong><button class="back-link" id="drawer-close">close ✕</button></div>
+    <dl>${rows.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl>
+    ${(call.toolCalls || []).length ? `<h4>otari_tool_calls</h4><pre>${escapeHtml(JSON.stringify(call.toolCalls, null, 2))}</pre>` : ''}`;
+  drawer.classList.add('open');
+  document.querySelector('#drawer-close').onclick = () => drawer.classList.remove('open');
+}
+
+async function loadOtari(probe = false, focusId = null) {
+  const button = document.querySelector('#otari-probe');
+  if (probe) { button.disabled = true; button.textContent = 'Probing each role…'; }
+  try {
+    const [status, activity] = await Promise.all([apiCall(`/api/otari/status${probe ? '?probe=1' : ''}`, { method: 'GET' }), apiCall('/api/otari/activity', { method: 'GET' })]);
+    renderOtariStatus(status);
+    otariCalls = activity.calls || [];
+    document.querySelector('#otari-activity').innerHTML = otariCalls.length
+      ? `<table class="activity-table"><thead><tr><th>time</th><th>task</th><th>role</th><th>served by</th><th>fallback</th><th>latency</th><th>tokens in/out</th><th>cost</th><th>guardrail</th><th>tools</th><th>end user</th><th>status</th><th>req</th></tr></thead><tbody>${otariCalls.map(activityRow).join('')}</tbody></table>`
+      : '<p class="hint">No Otari calls yet. Use Litmus as a contributor or maintainer and every call appears here.</p>';
+    document.querySelectorAll('[data-call]').forEach(row => row.addEventListener('click', () => showCall(row.dataset.call)));
+    if (focusId) showCall(focusId);
+  } catch (error) { document.querySelector('#otari-status').innerHTML = refusalHtml(error, 'Otari status unavailable.'); }
+  if (probe) { button.disabled = false; button.textContent = 'Probe each role'; }
+}
+
+document.addEventListener('click', event => {
+  const line = event.target.closest('.provenance[data-activity]');
+  if (line && line.dataset.activity) openOtari(line.dataset.activity);
+});
 function switchContributorTab(tab) {
   document.querySelectorAll('[data-contributor-tab]').forEach(button => button.classList.toggle('active', button.dataset.contributorTab === tab));
   document.querySelectorAll('.contributor-panel').forEach(panel => panel.classList.toggle('active', panel.id === `${tab}-panel`));
@@ -118,7 +282,16 @@ async function loadBotConsole() {
 }
 
 function botThreadHtml(thread, issue) {
-  const verdictChip = { demonstrated_understanding: 'teal', partial: 'amber', non_responsive: 'rose', no_reply_yet: 'dim' }[thread?.verdict] || 'dim';
+  const verdictChip = { demonstrated_understanding: 'teal', partial: 'amber', non_responsive: 'rose', no_reply_yet: 'dim', blocked_by_guardrail: 'rose' }[thread?.verdict] || 'dim';
+  const questionOtari = thread?.questionOtari || (thread?.state === 'awaiting_answer' ? thread?.otari : null);
+  const assessOtari = thread?.questionOtari ? thread.otari : null;
+  const blocked = thread?.verdict === 'blocked_by_guardrail';
+  const previewForm = thread?.question && !thread.commentUrl ? `
+    <div class="preview-reply">
+      <label for="preview-author">PREVIEW MODE · PASTE THE CONTRIBUTOR'S REPLY</label>
+      <div class="preview-row"><span>@</span><input id="preview-author" placeholder="their-github-login" spellcheck="false" /></div>
+      <textarea id="preview-body" placeholder="Their answer to the question above. Litmus sends it to the reviewer model as the guardrail-screened latest message."></textarea>
+    </div>` : '';
   return `<article class="journey-card">
     <h2>#${issue.number} · ${escapeHtml(issue.title)}</h2>
     ${thread?.question ? `
@@ -127,22 +300,25 @@ function botThreadHtml(thread, issue) {
         <p class="bot-question">${escapeHtml(thread.question.question)}</p>
         <div class="evidence">${escapeHtml(thread.question.evidence || '')}</div>
         <p class="bot-why">${escapeHtml(thread.question.why_this_matters || '')}</p>
+        ${provenanceHtml(questionOtari)}
       </div>` : `<p>Litmus hasn't asked anything on this issue yet.</p>`}
     ${(thread?.replies || []).map(reply => `
       <div class="bot-message reply">
-        <div class="bot-message-head"><span class="bot-avatar human">@</span><strong>${escapeHtml(reply.author)} replied</strong><a href="${escapeHtml(reply.url)}" target="_blank" rel="noreferrer">view ↗</a></div>
+        <div class="bot-message-head"><span class="bot-avatar human">@</span><strong>${escapeHtml(reply.author)} replied</strong>${reply.url ? `<a href="${escapeHtml(reply.url)}" target="_blank" rel="noreferrer">view ↗</a>` : '<span class="chip dim">pasted in preview</span>'}</div>
         <p>${escapeHtml(reply.body.slice(0, 700))}</p>
       </div>`).join('')}
     ${thread?.verdict ? `
-      <div class="bot-message verdict">
-        <div class="bot-message-head"><span class="bot-avatar">🧪</span><strong>Litmus assessed</strong><span class="chip ${verdictChip}">${pretty(thread.verdict)}</span></div>
+      <div class="bot-message verdict${blocked ? ' blocked' : ''}">
+        <div class="bot-message-head"><span class="bot-avatar">${blocked ? '⛔' : '🧪'}</span><strong>${blocked ? 'Otari guardrail blocked the reply' : 'Litmus assessed'}</strong><span class="chip ${verdictChip}">${pretty(thread.verdict)}</span></div>
         <p>${escapeHtml(thread.assessment || '')}</p>
         ${thread.follow_up ? `<p class="bot-why"><strong>Follow-up asked:</strong> ${escapeHtml(thread.follow_up)}</p>` : ''}
-        ${thread.maintainer_note ? `<div class="trail-note"><strong>For you:</strong> ${escapeHtml(thread.maintainer_note)}</div>` : ''}
+        ${thread.maintainer_note ? `<div class="trail-note${blocked ? ' warn' : ''}"><strong>For you:</strong> ${escapeHtml(thread.maintainer_note)}</div>` : ''}
+        ${blocked ? `<span class="mono-note">Otari request ${escapeHtml(thread.otari?.requestId || '—')}</span>` : provenanceHtml(assessOtari)}
       </div>` : ''}
+    ${previewForm}
     <div class="button-row">
       <button class="cta" id="bot-ask">${thread?.question ? 'Ask again' : botPosting ? 'Ask on GitHub' : 'Write the question (preview)'}</button>
-      ${thread?.question ? `<button class="cta ghost" id="bot-assess">Read replies &amp; assess</button>` : ''}
+      ${thread?.question ? `<button class="cta ghost" id="bot-assess">${thread.commentUrl ? 'Read replies &amp; assess' : 'Assess the reply'}</button>` : ''}
       <a class="hint" href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer">Open issue ↗</a>
     </div>
   </article>`;
@@ -174,19 +350,22 @@ async function runBotAsk(issueNumber, issue) {
     bindBotButtons(issueNumber, issue);
     toast(result.commentUrl ? 'Question posted to GitHub. Reply on the issue, then hit "Read replies & assess".' : 'Question written (preview, not posted). Paste or post a reply, then assess it.');
     loadBotConsole();
-  } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Write the question'; }
+  } catch (error) { toastError(error); button.disabled = false; button.textContent = 'Write the question'; }
 }
 
 async function runBotAssess(issueNumber, issue) {
   const button = document.querySelector('#bot-assess');
+  const author = document.querySelector('#preview-author')?.value.trim();
+  const body = document.querySelector('#preview-body')?.value.trim();
+  if (body && !author) return toast('Add the GitHub login of the contributor who wrote this reply.');
   button.disabled = true; button.textContent = 'Reading the reply against the code…';
   try {
-    const result = await request('/api/bot/assess', { repo: activeRepository, issueNumber, post: botPosting });
+    const result = await request('/api/bot/assess', { repo: activeRepository, issueNumber, post: botPosting, ...(body ? { previewReply: { author, body } } : {}) });
     document.querySelector('#bot-thread').innerHTML = botThreadHtml(result, issue);
     bindBotButtons(issueNumber, issue);
-    toast(result.verdict === 'no_reply_yet' ? 'No reply on the issue yet.' : `Assessed: ${result.verdict.replaceAll('_', ' ')}.`);
+    toast(result.verdict === 'no_reply_yet' ? (result.commentUrl ? 'No reply on the issue yet.' : 'Paste the contributor\'s reply first.') : result.verdict === 'blocked_by_guardrail' ? 'Otari\'s guardrail blocked that reply. It is now on the contributor\'s trail.' : `Assessed: ${result.verdict.replaceAll('_', ' ')}.`);
     loadBotConsole();
-  } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Read replies & assess'; }
+  } catch (error) { toastError(error); button.disabled = false; button.textContent = 'Assess the reply'; }
 }
 
 /* ================= shared: litmus strip + trust brief ================= */
@@ -200,7 +379,7 @@ const soundnessColor = { sound: 'teal', minor_gaps: 'amber', major_gaps: 'rose' 
 
 function trustBriefHtml(brief) {
   const trail = brief.planningTrail || {};
-  const trailClass = trail.respondedToFeedback ? 'strong' : trail.wentSilent || !trail.hasPlan ? 'warn' : '';
+  const trailClass = trail.guardrailEvents?.length ? 'warn' : trail.respondedToFeedback ? 'strong' : trail.wentSilent || !trail.hasPlan ? 'warn' : '';
   const driftBlock = brief.drift?.checked && brief.drift.outOfScope.length
     ? `<div class="trail-note warn"><strong>Drift check:</strong> the diff touches files outside the agreed plan's scope.<ul class="drift-list">${brief.drift.outOfScope.map(file => `<li>${escapeHtml(file)}</li>`).join('')}</ul></div>`
     : brief.drift?.checked ? `<div class="trail-note strong"><strong>Drift check:</strong> the diff stays inside the scope the plan agreed on.</div>` : '';
@@ -211,7 +390,9 @@ function trustBriefHtml(brief) {
     </div>
     <div class="brief-strip"><div class="strip"><span class="strip-marker" style="left:${verdictPosition[brief.verdict] ?? 50}%"></span></div></div>
     <p>${escapeHtml(brief.summary)}</p>
+    ${brief.guardrailBlocked ? `<div class="refusal guardrail"><small>OTARI GUARDRAIL · PR DESCRIPTION BLOCKED</small><h2>The PR description tried to instruct the reviewer model.</h2><p>Otari refused it before any model read it, so this brief is built from the diff and trail only. Logged on @${escapeHtml(brief.author || 'unknown')}'s Litmus trail.</p><span class="mono-note">request ${escapeHtml(brief.otari?.requestId || '—')}</span></div>` : ''}
     <div class="trail-note ${trailClass}"><strong>Planning trail:</strong> ${escapeHtml(trail.note || 'None recorded.')}${brief.trailAssessment ? ` ${escapeHtml(brief.trailAssessment)}` : ''}</div>
+    ${guardrailEventsHtml(trail.guardrailEvents)}
     ${driftBlock}
     <div class="brief-grid">
       <div><small>REVIEW FOCUS</small><b>${escapeHtml(brief.reviewFocus || '—')}</b></div>
@@ -219,6 +400,7 @@ function trustBriefHtml(brief) {
       <div><small>STRUCTURAL RISK</small><b>${brief.structuralRisk ? `${brief.structuralRisk}/100 — touches a high-dependency module in repo memory` : 'Low — no retained high-risk module in the diff'}</b></div>
     </div>
     <div class="button-row"><a class="cta ghost" href="${escapeHtml(brief.url)}" target="_blank" rel="noreferrer">Open pull request ↗</a><span class="hint">Litmus ranks the reading. The merge decision stays yours.</span></div>
+    ${brief.otari?.role ? provenanceHtml(brief.otari) : ''}
   </article>`;
 }
 
@@ -228,7 +410,7 @@ function renderMatches(result) {
   const profile = result.profile;
   const matches = result.matches || [];
   const target = document.querySelector('#contributor-results');
-  const profileCard = `<article class="skill-card"><div><small>EVIDENCE-BACKED SKILL MAP</small><h2>@${escapeHtml(profile.username)}</h2><p>${escapeHtml(profile.summary)}</p></div><div class="skill-tags">${(profile.skills || []).map(skill => `<span>${escapeHtml(skill)}</span>`).join('') || '<span>Public work analyzed</span>'}</div></article>`;
+  const profileCard = `<article class="skill-card"><div><small>EVIDENCE-BACKED SKILL MAP</small><h2>@${escapeHtml(profile.username)}</h2><p>${escapeHtml(profile.summary)}</p></div><div class="skill-tags">${(profile.skills || []).map(skill => `<span>${escapeHtml(skill)}</span>`).join('') || '<span>Public work analyzed</span>'}</div></article>${provenanceHtml(result.otari)}`;
   if (!matches.length) {
     target.innerHTML = `${profileCard}<div class="empty-state"><h2>No suitable open issues right now.</h2><p>Litmus excluded assigned, claimed, and overcrowded candidates. GitHub search rotates quickly — try again in a minute.</p></div>`;
     return;
@@ -257,7 +439,7 @@ async function analyzeProfile() {
   document.querySelector('#match-loading').classList.add('active');
   document.querySelector('#contributor-results').innerHTML = '';
   try { renderMatches(await request('/api/contributor-match', { username: activeUsername })); }
-  catch (error) { document.querySelector('#contributor-results').innerHTML = `<div class="empty-state"><h2>Matching is unavailable right now.</h2><p>${escapeHtml(error.message)}</p></div>`; }
+  catch (error) { document.querySelector('#contributor-results').innerHTML = refusalHtml(error, 'Matching is unavailable right now.'); }
   document.querySelector('#match-loading').classList.remove('active');
   button.disabled = false; button.textContent = 'Analyze my work';
 }
@@ -292,8 +474,9 @@ async function renderJourney() {
     if (!orientation) {
       target.innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Reading the issue, the implicated files, their callers, and the repo's conventions…</span></div>`;
       try { orientation = await request('/api/orient-issue', { repo: selectedMatch.repo, issueNumber: selectedMatch.id, username: activeUsername }); }
-      catch (error) { target.innerHTML = `<div class="empty-state"><h2>We couldn't load this issue's context.</h2><p>${escapeHtml(error.message)}</p></div>`; return; }
+      catch (error) { target.innerHTML = refusalHtml(error, 'We couldn\'t load this issue\'s context.'); return; }
     }
+    const orientationNotice = orientation.otariError ? (budgetKinds.includes(orientation.otariError.kind) ? refusalHtml({ message: orientation.otariError.message, otari: orientation.otariError }, '') : `<div class="callout"><strong>Model tour unavailable, showing the structural tour.</strong> ${escapeHtml(orientation.otariError.message)}</div>`) : '';
     const constraints = (orientation.constraints || []).map(constraint => `<div class="callout"><strong>${escapeHtml(constraint.title)}:</strong> ${escapeHtml(constraint.detail)}<span class="mono-note">${escapeHtml(constraint.evidence)}</span></div>`).join('');
     target.innerHTML = `<article class="journey-card">
       <h2>Your sixty-second orientation</h2>
@@ -301,12 +484,15 @@ async function renderJourney() {
       <div class="context-grid">${(orientation.areas || []).map(area => `<div class="context-item"><span class="role-tag">${escapeHtml(area.role)}</span><small>${escapeHtml(area.path)}</small><p>${escapeHtml(area.note)}</p></div>`).join('')}</div>
       ${constraints || ''}
       <div class="trail-note"><strong>Suggested first step:</strong> ${escapeHtml(orientation.firstStep)}</div>
+      ${orientationNotice}
+      ${groundingHtml(orientation.grounding, 'Grounding from Otari tools (DeepWiki MCP, linked docs)')}
       <div class="button-row"><button class="cta" id="orientation-next">Write my approach →</button><span class="hint">Even if you stop here, you got a free tour of the codebase.</span></div>
+      ${provenanceHtml(orientation.otari)}
     </article>`;
     document.querySelector('#orientation-next').onclick = () => { journeyStage = 1; renderJourney(); };
 
   } else if (journeyStage === 1) {
-    const isRevision = Boolean(planReview);
+    const isRevision = Boolean(planReview && !planReview.blocked);
     const previousPoints = isRevision && planReview.points?.length
       ? `<div class="callout"><strong>You're revising.</strong> Address these repository constraints in your new plan:${planReview.points.map(point => `<span class="mono-note">· ${escapeHtml(point.constraint)}</span>`).join('')}</div>`
       : '';
@@ -316,7 +502,8 @@ async function renderJourney() {
       ${previousPoints}
       <div class="plan-form"><label for="plan">YOUR CONTRIBUTION PLAN${isRevision ? ` — REVISION ${(planReview.revision || 1) + 1}` : ''}</label>
       <textarea id="plan" placeholder="Example: I'll trace the existing retry path in the API client, keep the public interface unchanged, and add a regression test for the reported failure.">${escapeHtml(planDraft)}</textarea>
-      <div class="button-row"><button class="cta" id="review-plan">${isRevision ? 'Check my revision' : 'Check my plan'}</button><span class="hint">Checked against real file:line evidence in ${escapeHtml(selectedMatch.repo)}.</span></div></div>
+      <div class="button-row"><button class="cta" id="review-plan">${isRevision ? 'Check my revision' : 'Check my plan'}</button><span class="hint">Checked against real file:line evidence in ${escapeHtml(selectedMatch.repo)}. A fenced code snippet is run in Otari's sandbox when code execution is on.</span></div></div>
+      <div id="plan-error"></div>
     </article>`;
     document.querySelector('#review-plan').onclick = async () => {
       const plan = document.querySelector('#plan').value.trim();
@@ -325,10 +512,26 @@ async function renderJourney() {
       const button = document.querySelector('#review-plan');
       button.disabled = true; button.textContent = 'Checking against the repository…';
       try {
+        const previous = planReview;
         planReview = await request('/api/analyze-plan', { repo: selectedMatch.repo, issueNumber: selectedMatch.id, plan, username: activeUsername, tone: 'mentor' });
+        if (planReview.blocked && previous && !previous.blocked) planReview.previous = previous;
         journeyStage = 2; renderJourney();
-      } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Check my plan'; }
+      } catch (error) {
+        button.disabled = false; button.textContent = 'Check my plan';
+        if (error.otari) document.querySelector('#plan-error').innerHTML = refusalHtml(error, 'The plan check failed.'); else toast(error.message);
+      }
     };
+
+  } else if (journeyStage === 2 && planReview.blocked) {
+    target.innerHTML = `<article class="journey-card blocked-card">
+      <div class="refusal guardrail"><small>OTARI GUARDRAIL · ${escapeHtml((planReview.guardrail?.profile || 'prompt-injection').toUpperCase())} · BLOCKED</small>
+      <h2>Your plan was stopped before any model read it.</h2>
+      <p>${escapeHtml(planReview.message)}</p>
+      <p>Plans are checked against the code, so text addressed to the reviewer model (rather than describing your change) is refused. The attempt is visible to the maintainer on your Litmus trail.</p>
+      <span class="mono-note">request ${escapeHtml(planReview.otari?.requestId || '—')}</span></div>
+      <div class="button-row"><button class="cta" id="revise-plan">Rewrite my plan</button></div>
+    </article>`;
+    document.querySelector('#revise-plan').onclick = () => { planReview = planReview.previous || null; journeyStage = 1; renderJourney(); };
 
   } else if (journeyStage === 2) {
     const points = planReview.points || [];
@@ -343,6 +546,9 @@ async function renderJourney() {
       ${planReview.revision_note ? `<div class="trail-note strong"><strong>Revision check:</strong> ${escapeHtml(planReview.revision_note)}</div>` : ''}
       ${planReview.what_they_got_right && points.length ? `<div class="trail-note"><strong>What's sound:</strong> ${escapeHtml(planReview.what_they_got_right)}</div>` : ''}
       ${feedback}
+      ${groundingHtml(planReview.grounding?.research, 'Docs read by Otari web fetch')}
+      ${groundingHtml(planReview.grounding?.sandbox, 'Your snippet, run in Otari\'s code sandbox')}
+      ${provenanceHtml(planReview.otari)}
       <div class="button-row">
         ${points.length ? `<button class="cta" id="revise-plan">Revise my approach</button>` : ''}
         <button class="cta ${points.length ? 'ghost' : ''}" id="pr-next">${points.length ? 'Proceed anyway — I can justify it' : 'Go build — then bring back the PR'}</button>
@@ -366,9 +572,9 @@ async function renderJourney() {
       const button = document.querySelector('#analyze-pr');
       button.disabled = true; button.textContent = 'Reading the pull request…';
       try {
-        prBrief = await request('/api/analyze-pr', { prUrl, issue: { repo: selectedMatch.repo, number: selectedMatch.id, title: selectedMatch.title } });
+        prBrief = await request('/api/analyze-pr', { prUrl, issue: { repo: selectedMatch.repo, number: selectedMatch.id, title: selectedMatch.title }, audience: 'contributor' });
         renderJourney();
-      } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Create trust brief'; }
+      } catch (error) { toastError(error); button.disabled = false; button.textContent = 'Create trust brief'; }
     };
   }
 }
@@ -380,9 +586,10 @@ async function loadTrail() {
   if (!activeUsername) { target.innerHTML = `<div class="empty-state"><h2>No trail yet.</h2><p>Analyze your GitHub in Discover and start a contribution — every orientation, plan, and revision lands here.</p></div>`; return; }
   target.innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Loading your contribution trail…</span></div>`;
   try {
-    const { trail } = await apiCall(`/api/trail?username=${encodeURIComponent(activeUsername)}`, { method: 'GET' });
+    const { trail, guardrailEvents } = await apiCall(`/api/trail?username=${encodeURIComponent(activeUsername)}`, { method: 'GET' });
+    if (!trail.length && guardrailEvents?.length) { target.innerHTML = guardrailEventsHtml(guardrailEvents); return; }
     if (!trail.length) { target.innerHTML = `<div class="empty-state"><h2>No trail yet for @${escapeHtml(activeUsername)}.</h2><p>Claim an issue in Discover and write an approach — the planning evidence you build here travels with your PRs.</p></div>`; return; }
-    target.innerHTML = trail.map(entry => `
+    target.innerHTML = guardrailEventsHtml(guardrailEvents) + trail.map(entry => `
       <article class="trail-card${entry.verdict ? ` verdict-${escapeHtml(entry.verdict)}` : ''}">
         <small>${escapeHtml(entry.repo)} #${entry.issueNumber} · ${pretty(entry.state)}</small>
         <h3>${escapeHtml(entry.issueTitle)}</h3>
@@ -392,6 +599,8 @@ async function loadTrail() {
           ${entry.respondedToFeedback ? '<span class="chip teal">revised after feedback</span>' : ''}
           ${entry.finalSoundness ? `<span class="chip ${soundnessColor[entry.finalSoundness] || 'dim'}">plan: ${pretty(entry.finalSoundness)}</span>` : ''}
           ${entry.verdict ? `<span class="chip ${entry.verdict === 'strong_signal' ? 'teal' : entry.verdict === 'needs_review' ? 'amber' : 'rose'}">PR: ${pretty(entry.verdict)}</span>` : ''}
+          ${entry.screening ? `<span class="chip ${entry.screening === 'demonstrated_understanding' ? 'teal' : entry.screening === 'blocked_by_guardrail' ? 'rose' : 'amber'}">screening: ${pretty(entry.screening)}</span>` : ''}
+          ${entry.guardrailEvents?.length ? `<span class="chip rose">${entry.guardrailEvents.length} injection attempt${entry.guardrailEvents.length === 1 ? '' : 's'} caught by Otari</span>` : ''}
         </div>
         <div class="button-row" style="margin-top:10px"><a href="${escapeHtml(entry.issueUrl)}" target="_blank" rel="noreferrer">Issue ↗</a>${entry.prUrl ? `&nbsp;&nbsp;<a href="${escapeHtml(entry.prUrl)}" target="_blank" rel="noreferrer">Pull request ↗</a>` : ''}</div>
       </article>`).join('');
@@ -471,6 +680,7 @@ function renderPriorityWorkspace(data) {
   const trailChips = pr => {
     const trail = pr.planningTrail;
     const chips = [];
+    if (trail?.guardrailEvents?.length) chips.push(`<span class="chip rose">injection attempt caught by Otari · ${trail.guardrailEvents.length}</span>`);
     if (trail?.respondedToFeedback) chips.push('<span class="chip teal">revised after feedback</span>');
     else if (trail?.wentSilent) chips.push('<span class="chip rose">went silent after questions</span>');
     else if (trail?.hasPlan) chips.push(`<span class="chip purple">planned via Litmus</span>`);
@@ -505,6 +715,7 @@ function renderPriorityWorkspace(data) {
     </section>` : '';
   workspace.innerHTML = `${memoryCard}
     <div class="priority-brief"><strong>Priority brief:</strong> ${escapeHtml(data.brief)}</div>
+    ${provenanceHtml(data.otari)}
     <div class="priority-columns">
       <section class="priority-section"><h2>Issues to move first</h2>${issueRows}</section>
       <section class="priority-section"><h2>PRs to review first</h2>${prRows}</section>
@@ -517,7 +728,7 @@ function renderPriorityWorkspace(data) {
     const container = link.parentElement.querySelector('.brief-inline');
     container.innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Building trust brief…</span></div>`;
     try { container.innerHTML = trustBriefHtml(await request('/api/analyze-pr', { prUrl })); }
-    catch (error) { container.innerHTML = `<p class="hint">${escapeHtml(error.message)}</p>`; }
+    catch (error) { container.innerHTML = refusalHtml(error, 'Trust brief unavailable.'); }
   }));
   apiCall(`/api/repo-graph?repo=${encodeURIComponent(data.repo)}`, { method: 'GET' })
     .then(result => { document.querySelector('#graph-target').innerHTML = graphSvg(result.graph) || '<p class="hint">Not enough indexed dependency edges to draw a graph for this repository.</p>'; })
@@ -531,7 +742,7 @@ async function buildPriorityQueue() {
   button.disabled = true; button.textContent = 'Reading the repository…';
   document.querySelector('#priority-workspace').innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Reading open issues and PRs, weighing structural risk and planning trails against your intent…</span></div>`;
   try { renderPriorityWorkspace(await request('/api/maintainer-priority', { repo: activeRepository, focus })); }
-  catch (error) { document.querySelector('#priority-workspace').innerHTML = `<div class="empty-state"><h2>Priority queue unavailable.</h2><p>${escapeHtml(error.message)}</p></div>`; }
+  catch (error) { document.querySelector('#priority-workspace').innerHTML = refusalHtml(error, 'Priority queue unavailable.'); }
   button.disabled = false; button.textContent = 'Build priority queue';
 }
 
@@ -544,7 +755,7 @@ async function triagePullRequest() {
   button.disabled = true; button.textContent = 'Reading the pull request…';
   target.innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Reading the diff, repo memory, and any planning trail…</span></div>`;
   try { target.innerHTML = trustBriefHtml(await request('/api/analyze-pr', { prUrl })); }
-  catch (error) { target.innerHTML = `<div class="empty-state"><h2>Couldn't build the brief.</h2><p>${escapeHtml(error.message)}</p></div>`; }
+  catch (error) { target.innerHTML = refusalHtml(error, 'Couldn\'t build the brief.'); }
   button.disabled = false; button.textContent = 'Create trust brief';
 }
 
@@ -556,7 +767,7 @@ document.querySelectorAll('[data-maintainer-tab]').forEach(button => button.addE
 document.querySelector('#analyze-profile').addEventListener('click', analyzeProfile);
 document.querySelector('#github-username').addEventListener('keydown', event => { if (event.key === 'Enter') analyzeProfile(); });
 document.querySelector('#back-to-contributor').addEventListener('click', () => enterRole('contributor'));
-document.querySelector('#home-button').addEventListener('click', () => showView('welcome-view'));
+document.querySelector('#home-button').addEventListener('click', () => { stopOtariRefresh(); showView('welcome-view'); });
 document.querySelector('#activate-repo').addEventListener('click', registerRepository);
 document.querySelector('#maintainer-repo').addEventListener('keydown', event => { if (event.key === 'Enter') registerRepository(); });
 document.querySelector('#build-priority').addEventListener('click', buildPriorityQueue);
@@ -577,13 +788,16 @@ const params = new URLSearchParams(window.location.search);
 if (params.get('repo')) { activeRepository = params.get('repo'); localStorage.setItem('litmus_repo', activeRepository); }
 if (params.get('user')) { activeUsername = params.get('user'); localStorage.setItem('litmus_username', activeUsername); }
 const [hashRole, hashTab] = window.location.hash.replace('#', '').split('/');
+if (hashRole === 'otari') openOtari();
 if (['contributor', 'maintainer'].includes(hashRole)) {
   enterRole(hashRole);
   if (hashTab) (hashRole === 'maintainer' ? switchMaintainerTab : switchContributorTab)(hashTab);
 }
+document.querySelector('#otari-refresh').addEventListener('click', () => loadOtari(false));
+document.querySelector('#otari-probe').addEventListener('click', () => loadOtari(true));
 if (activeUsername) document.querySelector('#github-username').value = activeUsername;
 if (activeRepository) document.querySelector('#focus-repo-label').textContent = `Prioritizing ${activeRepository}`;
 
 apiCall('/api/health', { method: 'GET' })
-  .then(status => { document.querySelector('#runtime-state').textContent = status.mode === 'live' ? 'OPEN-WEIGHT MODELS VIA OTARI' : 'CONFIGURATION REQUIRED'; })
+  .then(status => { document.querySelector('#runtime-state').textContent = status.mode === 'live' ? `OPEN-WEIGHT MODELS VIA OTARI${status.guardrails ? ' · GUARDRAILED' : ''}` : 'CONFIGURATION REQUIRED'; })
   .catch(() => { document.querySelector('#runtime-state').textContent = 'API OFFLINE'; });

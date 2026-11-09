@@ -1030,7 +1030,7 @@ function liveEvidence() {
       evidence: byType('code_execution').length ? `${byType('code_execution').length} sandbox runs of contributor snippets.` : otari.isOn('LITMUS_CODE_EXEC') ? `Enabled; runs when a plan contains a fenced code snippet${otari.toolOff('code') ? ` (last attempt: ${otari.toolOff('code').kind})` : ''}.` : 'Off. Set LITMUS_CODE_EXEC=on.',
       where: 'otari.js runSnippet', lastRequestId: last(byType('code_execution'))?.requestId || null }
   ];
-  return { roles, features, endUserMode: otari.learned.endUserMode || 'unknown', serviceKey: otari.learned.serviceKey, totals: { calls: calls.length, ok: ok.length, errors: calls.length - ok.length, costUsd: Number(totalCost.toFixed(6)) } };
+  return { roles, features, endUserMode: otari.learned.endUserMode || userCalls[0]?.endUserMode || 'unknown', serviceKey: otari.learned.serviceKey, totals: { calls: calls.length, ok: ok.length, errors: calls.length - ok.length, costUsd: Number(totalCost.toFixed(6)) } };
 }
 
 /* ---------------- HTTP plumbing ---------------- */

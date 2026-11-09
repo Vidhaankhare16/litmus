@@ -17,6 +17,7 @@
       <nav class="top-nav">
         <button class="top-link" data-role="contributor">Contributor</button>
         <button class="top-link" data-role="maintainer">Maintainer</button>
+        <button class="top-link otari-link" data-role="otari">Otari</button>
       </nav>
     </header>
 
@@ -46,7 +47,7 @@
             <b>Enter as maintainer →</b>
           </button>
         </div>
-        <div class="welcome-foot">Open-weight models reading real repositories, routed through Otari · Litmus never guesses who wrote the code — it tests whether the work can explain itself.</div>
+        <div class="welcome-foot">Open-weight models reading real repositories, routed through <button class="inline-link" data-role="otari">Otari</button> · Litmus never guesses who wrote the code — it tests whether the work can explain itself.</div>
       </section>
 
       <!-- ============ CONTRIBUTOR ============ -->
@@ -151,6 +152,18 @@
             <div id="triage-result"></div>
           </div>
         </div>
+      </section>
+
+      <!-- ============ OTARI GATEWAY ============ -->
+      <section class="view otari-view" id="otari-view">
+        <div class="page-kicker">OTARI GATEWAY · HOW LITMUS USES IT</div>
+        <h1>Every model call, <em>accounted for.</em></h1>
+        <p class="lede">Litmus runs three open-weight models through Otari. This page shows which Otari features Litmus actually exercised, with the request IDs to prove it, and every call it made: which model served it, whether a fallback did, what it cost, what the guardrail said, and which tools ran.</p>
+        <div class="button-row"><button class="cta" id="otari-refresh">Refresh</button><button class="cta ghost" id="otari-probe">Probe each role</button><span class="hint">A probe sends one tiny structured call per role.</span></div>
+        <div id="otari-status" class="otari-status"><div class="match-loading active"><div class="loader"></div><span>Asking Otari about models, tools, guardrails, MCP servers and budgets…</span></div></div>
+        <div class="section-head"><h2>Activity</h2><span>last 200 calls · click a row for headers, cost and tool calls</span></div>
+        <div id="otari-activity" class="otari-activity"></div>
+        <aside class="otari-drawer" id="otari-drawer"></aside>
       </section>
 
       <!-- ============ CONTRIBUTOR JOURNEY ============ -->
