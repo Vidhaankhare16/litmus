@@ -62,6 +62,7 @@ function switchMaintainerTab(tab) {
 /* ================= maintainer: Litmus bot ================= */
 
 let botIssues = [];
+let botPosting = false;
 
 function renderBotToggle(enabled) {
   const toggle = document.querySelector('#bot-toggle');
@@ -74,19 +75,19 @@ async function loadBotIdentity() {
   const target = document.querySelector('#bot-identity');
   try {
     const identity = await apiCall('/api/bot/identity', { method: 'GET' });
+    botPosting = Boolean(identity.posting);
     const render = {
-      app: () => `<span class="bot-avatar">🧪</span><div><strong>Comments post as ${escapeHtml(identity.login)}</strong><p>Litmus has its own GitHub App identity on this repository.</p></div>`,
-      token: () => `<span class="bot-avatar human">@</span><div><strong>Comments post as @${escapeHtml(identity.login)}</strong><p>Using your personal token. Install the Litmus GitHub App to give the bot its own identity.</p></div>`,
-      app_error: () => `<span class="bot-avatar human">!</span><div><strong>GitHub App not usable</strong><p>${escapeHtml(identity.message)}${identity.fallback ? ' Falling back to your personal token.' : ''}</p></div>`,
-      none: () => `<span class="bot-avatar human">!</span><div><strong>No GitHub write credentials</strong><p>Add GITHUB_TOKEN or configure the Litmus GitHub App to let the bot comment.</p></div>`
+      preview: () => `<span class="bot-avatar">🧪</span><div><strong>Preview mode — nothing is posted to GitHub</strong><p>Litmus writes the question and judges replies here. Set LITMUS_GITHUB_POSTING=on to post comments as your GITHUB_TOKEN account.</p></div>`,
+      token: () => `<span class="bot-avatar human">@</span><div><strong>Posting enabled · comments post as @${escapeHtml(identity.login)}</strong><p>LITMUS_GITHUB_POSTING is on. Each post still needs your click.</p></div>`,
+      none: () => `<span class="bot-avatar human">!</span><div><strong>No GITHUB_TOKEN</strong><p>Add GITHUB_TOKEN to read repositories without hitting anonymous rate limits.</p></div>`
     }[identity.mode];
     target.innerHTML = render ? render() : '';
-    target.className = `bot-identity ${identity.mode === 'app' ? 'is-app' : ''}`;
+    target.className = `bot-identity ${identity.mode === 'preview' ? 'is-app' : ''}`;
   } catch { target.innerHTML = ''; }
 }
 
 async function loadBotConsole() {
-  loadBotIdentity();
+  await loadBotIdentity();
   const area = document.querySelector('#bot-issue-area');
   const nameEl = document.querySelector('#bot-repo-name');
   const noteEl = document.querySelector('#bot-repo-note');
@@ -98,7 +99,7 @@ async function loadBotConsole() {
     return;
   }
   nameEl.textContent = activeRepository;
-  noteEl.textContent = 'When on, Litmus replies to volunteers on this repo\'s issues.';
+  noteEl.textContent = 'When on, Litmus can ask volunteers on this repo\'s issues one question drawn from the code.';
   area.innerHTML = `<div class="match-loading active"><div class="loader"></div><span>Loading open issues…</span></div>`;
   try {
     const data = await apiCall(`/api/repo-issues?repo=${encodeURIComponent(activeRepository)}`, { method: 'GET' });
@@ -140,7 +141,7 @@ function botThreadHtml(thread, issue) {
         ${thread.maintainer_note ? `<div class="trail-note"><strong>For you:</strong> ${escapeHtml(thread.maintainer_note)}</div>` : ''}
       </div>` : ''}
     <div class="button-row">
-      <button class="cta" id="bot-ask">${thread?.question ? 'Ask again' : 'Ask on GitHub'}</button>
+      <button class="cta" id="bot-ask">${thread?.question ? 'Ask again' : botPosting ? 'Ask on GitHub' : 'Write the question (preview)'}</button>
       ${thread?.question ? `<button class="cta ghost" id="bot-assess">Read replies &amp; assess</button>` : ''}
       <a class="hint" href="${escapeHtml(issue.url)}" target="_blank" rel="noreferrer">Open issue ↗</a>
     </div>
@@ -168,19 +169,19 @@ async function runBotAsk(issueNumber, issue) {
   const button = document.querySelector('#bot-ask');
   button.disabled = true; button.textContent = 'Reading the code and writing the question…';
   try {
-    const result = await request('/api/bot/ask', { repo: activeRepository, issueNumber });
+    const result = await request('/api/bot/ask', { repo: activeRepository, issueNumber, post: botPosting });
     document.querySelector('#bot-thread').innerHTML = botThreadHtml(result, issue);
     bindBotButtons(issueNumber, issue);
-    toast('Question posted to GitHub. Reply on the issue, then hit "Read replies & assess".');
+    toast(result.commentUrl ? 'Question posted to GitHub. Reply on the issue, then hit "Read replies & assess".' : 'Question written (preview, not posted). Paste or post a reply, then assess it.');
     loadBotConsole();
-  } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Ask on GitHub'; }
+  } catch (error) { toast(error.message); button.disabled = false; button.textContent = 'Write the question'; }
 }
 
 async function runBotAssess(issueNumber, issue) {
   const button = document.querySelector('#bot-assess');
   button.disabled = true; button.textContent = 'Reading the reply against the code…';
   try {
-    const result = await request('/api/bot/assess', { repo: activeRepository, issueNumber });
+    const result = await request('/api/bot/assess', { repo: activeRepository, issueNumber, post: botPosting });
     document.querySelector('#bot-thread').innerHTML = botThreadHtml(result, issue);
     bindBotButtons(issueNumber, issue);
     toast(result.verdict === 'no_reply_yet' ? 'No reply on the issue yet.' : `Assessed: ${result.verdict.replaceAll('_', ' ')}.`);
@@ -567,7 +568,7 @@ document.querySelector('#bot-toggle').addEventListener('click', async () => {
   renderBotToggle(next);
   try {
     await request('/api/repo-settings', { repo: activeRepository, enabled: next });
-    toast(next ? `Litmus bot is on for ${activeRepository}. It will answer volunteers on your issues.` : 'Litmus bot is off.');
+    toast(next ? `Litmus bot is on for ${activeRepository}. Pick an issue to write its screening question.` : 'Litmus bot is off.');
   } catch (error) { renderBotToggle(!next); toast(error.message); }
 });
 
@@ -584,5 +585,5 @@ if (activeUsername) document.querySelector('#github-username').value = activeUse
 if (activeRepository) document.querySelector('#focus-repo-label').textContent = `Prioritizing ${activeRepository}`;
 
 apiCall('/api/health', { method: 'GET' })
-  .then(status => { document.querySelector('#runtime-state').textContent = status.mode === 'live' ? 'GPT-5.6 LIVE' : 'CONFIGURATION REQUIRED'; })
+  .then(status => { document.querySelector('#runtime-state').textContent = status.mode === 'live' ? 'OPEN-WEIGHT MODELS VIA OTARI' : 'CONFIGURATION REQUIRED'; })
   .catch(() => { document.querySelector('#runtime-state').textContent = 'API OFFLINE'; });

@@ -1,7 +1,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 function loadLocalEnv() {
   const envPath = path.join(__dirname, '.env');
@@ -19,14 +18,12 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const root = __dirname;
-// Cloud Run injects PORT and expects the container to listen on it.
-const port = Number(process.env.PORT || process.env.LITMUS_PORT || process.env.PROOFPULL_PORT || 4173);
-// Managed runtimes give you a writable /tmp but not always a writable app dir.
+const port = Number(process.env.LITMUS_PORT || 4173);
 const dataDir = process.env.LITMUS_DATA_DIR || path.join(root, 'data');
 const storePath = path.join(dataDir, 'store.json');
-const legacyStorePath = path.join(dataDir, 'interviews.json');
 const repoMemoryPath = path.join(dataDir, 'repo-memory.json');
 const memorySchemaVersion = 2;
+const staticFiles = new Set(['/index.html', '/app.js', '/styles.css']);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 
 /* ---------------- Model gateway: Otari ---------------- */
@@ -69,81 +66,17 @@ function githubHeaders() {
   return { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'litmus-oss', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) };
 }
 
-/* ---------------- GitHub App identity (so the bot comments as Litmus[bot]) ---------------- */
+/* ---------------- GitHub posting (optional, off by default) ---------------- */
 
-const installationTokens = new Map();
-
-function appPrivateKey() {
-  if (process.env.GITHUB_APP_PRIVATE_KEY_PATH) {
-    const keyPath = path.isAbsolute(process.env.GITHUB_APP_PRIVATE_KEY_PATH) ? process.env.GITHUB_APP_PRIVATE_KEY_PATH : path.join(root, process.env.GITHUB_APP_PRIVATE_KEY_PATH);
-    if (!fs.existsSync(keyPath)) throw new Error(`GITHUB_APP_PRIVATE_KEY_PATH points to ${keyPath}, which does not exist.`);
-    return fs.readFileSync(keyPath, 'utf8');
-  }
-  // Inline keys survive .env by escaping newlines; restore them before signing.
-  return (process.env.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-}
-
-function appConfigured() { return Boolean(process.env.GITHUB_APP_ID && (process.env.GITHUB_APP_PRIVATE_KEY || process.env.GITHUB_APP_PRIVATE_KEY_PATH)); }
-
-function appJwt() {
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({ iat: now - 60, exp: now + 540, iss: String(process.env.GITHUB_APP_ID) })).toString('base64url');
-  const signer = crypto.createSign('RSA-SHA256');
-  signer.update(`${header}.${payload}`);
-  return `${header}.${payload}.${signer.sign(appPrivateKey()).toString('base64url')}`;
-}
-
-async function appRequest(pathname, jwt, options = {}) {
-  const response = await fetch(`https://api.github.com${pathname}`, { ...options, headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'litmus-oss', Authorization: `Bearer ${jwt}`, ...(options.headers || {}) } });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    if (response.status === 401) throw new Error('GitHub rejected the App credentials. Check GITHUB_APP_ID and that the private key matches this App.');
-    if (response.status === 404) throw new Error('The Litmus GitHub App is not installed on this repository. Install it from the App settings page, then retry.');
-    throw new Error(`GitHub App request failed (${response.status}): ${detail.slice(0, 200)}`);
-  }
-  return response.json();
-}
-
-async function installationToken(repo) {
-  const cached = installationTokens.get(repo);
-  if (cached && cached.expiresAt - Date.now() > 60_000) return cached.token;
-  const jwt = appJwt();
-  const installation = process.env.GITHUB_APP_INSTALLATION_ID
-    ? { id: process.env.GITHUB_APP_INSTALLATION_ID }
-    : await appRequest(`/repos/${repo}/installation`, jwt);
-  const result = await appRequest(`/app/installations/${installation.id}/access_tokens`, jwt, { method: 'POST' });
-  installationTokens.set(repo, { token: result.token, expiresAt: Date.parse(result.expires_at) });
-  return result.token;
-}
-
-// Reads can use the PAT; writes prefer the App so comments carry the Litmus identity.
-async function writeHeaders(repo) {
-  if (appConfigured()) {
-    try {
-      const token = await installationToken(repo);
-      return { headers: { ...githubHeaders(), Authorization: `Bearer ${token}` }, identity: 'app' };
-    } catch (error) {
-      if (!process.env.GITHUB_TOKEN) throw error;
-      console.error('GitHub App auth failed, falling back to GITHUB_TOKEN:', error.message);
-    }
-  }
-  if (!process.env.GITHUB_TOKEN) throw new Error('Posting to GitHub needs either a Litmus GitHub App (GITHUB_APP_ID + private key) or GITHUB_TOKEN.');
-  return { headers: githubHeaders(), identity: 'token' };
-}
+// Litmus reads GitHub with GITHUB_TOKEN. It only writes comments when the operator opts in with
+// LITMUS_GITHUB_POSTING=on; otherwise every bot question and assessment is a local preview.
+function postingEnabled() { return /^(on|true|1)$/i.test(process.env.LITMUS_GITHUB_POSTING || '') && Boolean(process.env.GITHUB_TOKEN); }
 
 async function botIdentity() {
-  if (appConfigured()) {
-    try {
-      const app = await appRequest('/app', appJwt());
-      return { mode: 'app', login: `${app.slug}[bot]`, name: app.name, htmlUrl: app.html_url };
-    } catch (error) { return { mode: 'app_error', message: error.message, fallback: process.env.GITHUB_TOKEN ? 'GITHUB_TOKEN' : null }; }
-  }
-  if (process.env.GITHUB_TOKEN) {
-    try { const user = await github('/user'); return { mode: 'token', login: user.login, name: user.name }; }
-    catch { return { mode: 'token', login: 'configured token' }; }
-  }
-  return { mode: 'none' };
+  if (!process.env.GITHUB_TOKEN) return { mode: 'none', posting: false };
+  if (!postingEnabled()) return { mode: 'preview', posting: false };
+  try { const user = await github('/user'); return { mode: 'token', posting: true, login: user.login, name: user.name }; }
+  catch { return { mode: 'token', posting: true, login: 'configured token' }; }
 }
 
 async function github(pathname) {
@@ -171,10 +104,7 @@ function parsePullRequestUrl(value) {
 /* ---------------- Store ---------------- */
 
 function readStore() {
-  try { return JSON.parse(fs.readFileSync(storePath, 'utf8')); }
-  catch {
-    try { return JSON.parse(fs.readFileSync(legacyStorePath, 'utf8')); } catch { return {}; }
-  }
+  try { return JSON.parse(fs.readFileSync(storePath, 'utf8')); } catch { return {}; }
 }
 function writeStore(store) { fs.mkdirSync(path.dirname(storePath), { recursive: true }); fs.writeFileSync(storePath, JSON.stringify(store, null, 2)); }
 function claimKey(repo, issueNumber) { return `claim:${repo}#${issueNumber}`; }
@@ -774,26 +704,10 @@ function contributorTrail(username) {
     .sort((a, b) => Date.parse(b.updatedAt || b.claimedAt || 0) - Date.parse(a.updatedAt || a.claimedAt || 0));
 }
 
-/* ---------------- GitHub webhook (optional bot mode) ---------------- */
-
-function safeEqual(a, b) { const left = Buffer.from(a || ''); const right = Buffer.from(b || ''); return left.length === right.length && crypto.timingSafeEqual(left, right); }
-
-// A public deployment shares one GitHub token with every visitor. The allowlist keeps
-// that token from being used to comment on anything except the repos named here.
-function assertWriteAllowed(repo) {
-  const allowlist = (process.env.LITMUS_WRITE_ALLOWLIST || '').split(',').map(entry => entry.trim()).filter(Boolean);
-  if (allowlist.length && !allowlist.includes(repo)) {
-    throw new Error(`This deployment only posts to ${allowlist.join(', ')}. Run Litmus locally with your own credentials to use it on ${repo}.`);
-  }
-}
-
 async function postGitHubComment(repo, issueNumber, body) {
-  assertWriteAllowed(repo);
-  const { headers, identity } = await writeHeaders(repo);
-  const response = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
-  if (!response.ok) throw new Error(response.status === 403
-    ? identity === 'app' ? 'The Litmus App lacks write access to issues on this repository. Grant it Issues: Read and write, then reinstall.' : 'The configured GITHUB_TOKEN cannot comment on this repository. It needs repo scope and write access.'
-    : `GitHub comment failed: ${response.status}`);
+  if (!postingEnabled()) throw new Error('Posting to GitHub is off. Set LITMUS_GITHUB_POSTING=on (with GITHUB_TOKEN) to post as your own account.');
+  const response = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, { method: 'POST', headers: { ...githubHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+  if (!response.ok) throw new Error(response.status === 403 ? 'The configured GITHUB_TOKEN cannot comment on this repository. It needs repo scope and write access.' : `GitHub comment failed: ${response.status}`);
   return response.json();
 }
 
@@ -804,13 +718,13 @@ const botKey = (repo, issueNumber) => `bot:${repo}#${issueNumber}`;
 
 function botSettings(repo) {
   const store = readStore();
-  return { enabled: false, autoAsk: true, ...(store[`repo:${repo}`]?.bot || {}) };
+  return { enabled: false, ...(store[`repo:${repo}`]?.bot || {}) };
 }
 
 function setBotSettings(repo, patch) {
   const store = readStore();
   const entry = store[`repo:${repo}`] || { repo, registeredAt: new Date().toISOString() };
-  entry.bot = { enabled: false, autoAsk: true, ...(entry.bot || {}), ...patch };
+  entry.bot = { enabled: false, ...(entry.bot || {}), ...patch };
   store[`repo:${repo}`] = entry;
   writeStore(store);
   return entry.bot;
@@ -825,9 +739,8 @@ function markdownBotAssessment(assessment, issueNumber) {
   return `> 🧪 **LITMUS BOT** · automated · verdict \`${assessment.verdict}\`\n\n---\n\n### ${heading}\n\n${assessment.assessment}\n\n${assessment.follow_up ? `**One more thing:** ${assessment.follow_up}\n\n` : ''}${assessment.verdict === 'demonstrated_understanding' ? `Recorded on the Litmus trail for issue #${issueNumber}. When your PR arrives the maintainer will see you worked this out before writing code — the strongest signal Litmus can pass along.` : 'Litmus records how approaches evolve, not whether an answer was perfect first try.'}\n\n---\n\n<sub>🤖 Generated by Litmus. The maintainer makes every decision.</sub>\n\n${BOT_MARKER}`;
 }
 
-async function botAsk(repoInput, issueNumber, { post = true } = {}) {
+async function botAsk(repoInput, issueNumber, { post = false } = {}) {
   const repo = parseRepo(repoInput);
-  if (post) assertWriteAllowed(repo);
   if (!process.env.OTARI_API_KEY) throw new Error('Generating a screening question requires OTARI_API_KEY');
   const context = await collectContext(repo, issueNumber, '');
   const schema = { type: 'object', additionalProperties: false, required: ['question', 'why_this_matters', 'evidence', 'ideal_answer_covers'], properties: {
@@ -857,9 +770,8 @@ async function botAsk(repoInput, issueNumber, { post = true } = {}) {
   return record;
 }
 
-async function botAssess(repoInput, issueNumber, { post = true } = {}) {
+async function botAssess(repoInput, issueNumber, { post = false } = {}) {
   const repo = parseRepo(repoInput);
-  if (post) assertWriteAllowed(repo);
   const store = readStore();
   const record = store[botKey(repo, issueNumber)];
   if (!record) throw new Error('Litmus has not asked a question on this issue yet.');
@@ -904,49 +816,6 @@ async function botAssess(repoInput, issueNumber, { post = true } = {}) {
   return updated;
 }
 
-function markdownBrief(result) {
-  const point = result.points?.[0];
-  return `## Litmus · planning brief\n\n**Plan signal:** \`${result.plan_soundness}\`\n\n${result.what_they_got_right ? `**What is sound:** ${result.what_they_got_right}\n\n` : ''}${point ? `**Constraint to address:** ${point.constraint}\n\n**Why it matters:** ${point.consequence}\n\n**Question:** ${point.prompt_to_contributor}\n\n_Evidence: ${point.evidence.map(e => `\`${e.path}:${e.line_start}-${e.line_end}\``).join(', ')}_` : 'No repository-grounded plan collisions were found. You are ready to contribute.'}\n\n<!-- litmus:managed -->`;
-}
-
-function markdownPullRequestBrief(result) {
-  return `## Litmus · trust brief\n\n**Verdict:** \`${result.verdict}\` · **Issue alignment:** \`${result.alignment}\`\n\n${result.summary}\n\n**Planning trail:** ${result.planningTrail?.note || 'None recorded.'}\n\n**Review focus:** ${result.reviewFocus}\n\n${result.riskAreas.length ? `**Risk areas:**\n${result.riskAreas.map(area => `- ${area}`).join('\n')}\n\n` : ''}_This is a triage aid grounded in PR evidence. It does not judge authorship or make a merge decision._\n\n<!-- litmus:managed -->`;
-}
-
-async function handleWebhook(req, res, body) {
-  if (!process.env.GITHUB_WEBHOOK_SECRET) return respond(res, 503, { error: 'GITHUB_WEBHOOK_SECRET is required for webhook mode' });
-  const signature = req.headers['x-hub-signature-256'];
-  const expected = `sha256=${crypto.createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET).update(body).digest('hex')}`;
-  if (!safeEqual(signature, expected)) return respond(res, 401, { error: 'Invalid webhook signature' });
-  const event = req.headers['x-github-event']; const payload = JSON.parse(body);
-  if (event === 'issue_comment' && payload.action === 'created' && !payload.issue.pull_request) {
-    const comment = payload.comment?.body?.trim() || ''; const repo = payload.repository?.full_name; const issueNumber = payload.issue?.number;
-    const bot = botSettings(repo);
-    if (bot.enabled && !comment.includes(BOT_MARKER) && payload.sender?.type !== 'Bot') {
-      const store = readStore();
-      const existing = store[botKey(repo, issueNumber)];
-      const volunteering = /\b(i'?d? ?(would)? ?like to (work|take)|can i (work|take|try)|assign (this )?to me|i'?ll take this|working on this|let me (try|take))\b/i.test(comment);
-      if (!existing && bot.autoAsk && volunteering) { await botAsk(repo, issueNumber); return respond(res, 200, { ok: true, event, action: 'asked' }); }
-      if (existing?.state === 'awaiting_answer') { await botAssess(repo, issueNumber); return respond(res, 200, { ok: true, event, action: 'assessed' }); }
-    }
-    if (comment === '/litmus claim') {
-      updateClaim(repo, issueNumber, { username: payload.sender?.login, state: 'awaiting_plan', issueTitle: payload.issue?.title, issueUrl: payload.issue?.html_url });
-      await postGitHubComment(repo, issueNumber, '👋 **Litmus orientation started.** Reply with `/litmus plan <your approach>` and I\'ll check it against the relevant code paths before you begin.');
-    }
-    if (comment.startsWith('/litmus plan ')) {
-      const plan = comment.replace('/litmus plan ', '').trim();
-      const result = await analyzePlan({ repo, issueNumber, plan, username: payload.sender?.login });
-      await postGitHubComment(repo, issueNumber, markdownBrief(result));
-    }
-  }
-  if (event === 'pull_request' && ['opened', 'ready_for_review'].includes(payload.action) && !payload.pull_request?.draft) {
-    const repo = payload.repository?.full_name; const prNumber = payload.pull_request?.number;
-    const result = await analyzePullRequest(payload.pull_request?.html_url);
-    await postGitHubComment(repo, prNumber, markdownPullRequestBrief(result));
-  }
-  return respond(res, 200, { ok: true, event });
-}
-
 /* ---------------- HTTP plumbing ---------------- */
 
 function responseHeaders(type) { return { 'Content-Type': type, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }; }
@@ -958,7 +827,7 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
     if (req.method === 'OPTIONS') { res.writeHead(204, responseHeaders('application/json; charset=utf-8')); return res.end(); }
-    if (req.method === 'GET' && url.pathname === '/api/health') return respond(res, 200, { ok: true, product: 'litmus', mode: process.env.OTARI_API_KEY ? 'live' : 'configuration_required', githubToken: Boolean(process.env.GITHUB_TOKEN), githubApp: appConfigured(), port });
+    if (req.method === 'GET' && url.pathname === '/api/health') return respond(res, 200, { ok: true, product: 'litmus', mode: process.env.OTARI_API_KEY ? 'live' : 'configuration_required', githubToken: Boolean(process.env.GITHUB_TOKEN), githubPosting: postingEnabled(), port });
     if (req.method === 'GET' && url.pathname === '/api/bot/identity') return respond(res, 200, await botIdentity());
     if (req.method === 'POST' && url.pathname === '/api/contributor-match') {
       const body = JSON.parse(await readBody(req));
@@ -994,7 +863,7 @@ http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/repo-settings') {
       const body = JSON.parse(await readBody(req));
       const repo = parseRepo(body.repo);
-      const bot = setBotSettings(repo, { enabled: Boolean(body.enabled), ...(body.autoAsk === undefined ? {} : { autoAsk: Boolean(body.autoAsk) }) });
+      const bot = setBotSettings(repo, { enabled: Boolean(body.enabled) });
       return respond(res, 200, { ok: true, repo, bot });
     }
     if (req.method === 'GET' && url.pathname === '/api/repo-issues') {
@@ -1015,11 +884,11 @@ http.createServer(async (req, res) => {
       const body = JSON.parse(await readBody(req));
       const repo = parseRepo(body.repo);
       if (!botSettings(repo).enabled) return respond(res, 400, { error: 'Enable the Litmus bot for this repository first.' });
-      return respond(res, 200, await botAsk(repo, Number(body.issueNumber), { post: body.post !== false }));
+      return respond(res, 200, await botAsk(repo, Number(body.issueNumber), { post: body.post === true }));
     }
     if (req.method === 'POST' && url.pathname === '/api/bot/assess') {
       const body = JSON.parse(await readBody(req));
-      return respond(res, 200, await botAssess(parseRepo(body.repo), Number(body.issueNumber), { post: body.post !== false }));
+      return respond(res, 200, await botAssess(parseRepo(body.repo), Number(body.issueNumber), { post: body.post === true }));
     }
     if (req.method === 'GET' && url.pathname === '/api/trail') {
       return respond(res, 200, { username: url.searchParams.get('username') || '', trail: contributorTrail(url.searchParams.get('username')) });
@@ -1045,12 +914,11 @@ http.createServer(async (req, res) => {
       const body = JSON.parse(await readBody(req));
       return respond(res, 200, await analyzePullRequest(body.prUrl, body.issue || null));
     }
-    if (req.method === 'POST' && url.pathname === '/webhooks/github') return handleWebhook(req, res, await readBody(req));
     if (req.method === 'GET') {
+      // Only the app's own front-end files are served, so .env and data/ never leave the machine.
       const requestPath = url.pathname === '/' ? '/index.html' : url.pathname;
-      const filePath = path.resolve(root, `.${requestPath}`);
-      if (!filePath.startsWith(root)) return text(res, 403, 'Forbidden');
-      return fs.readFile(filePath, (error, data) => error ? text(res, error.code === 'ENOENT' ? 404 : 500, 'Not found') : text(res, 200, data, types[path.extname(filePath)] || 'application/octet-stream'));
+      if (!staticFiles.has(requestPath)) return text(res, 404, 'Not found');
+      return fs.readFile(path.join(root, requestPath), (error, data) => error ? text(res, 404, 'Not found') : text(res, 200, data, types[path.extname(requestPath)] || 'application/octet-stream'));
     }
     return text(res, 405, 'Method not allowed');
   } catch (error) { console.error(error); return respond(res, 500, { error: error.message || 'Unexpected server error' }); }
