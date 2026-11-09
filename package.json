@@ -1,10 +1,11 @@
 {
   "name": "litmus",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Litmus — the test happens before the code. Two-sided contribution intelligence for open source.",
+  "description": "Litmus: the test happens before the code. Contribution intelligence for open source, on open-weight models through Otari.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js"
+    "check": "node --check server.js && node --check otari.js && node --check app.js && node --check scripts/selftest.js",
+    "test": "node scripts/selftest.js"
   }
 }
