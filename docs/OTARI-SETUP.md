@@ -6,7 +6,7 @@ The button and field names below are copied from the dashboard's source (`web/sr
 
 **Before you start**
 
-- Sign in at <https://otari.ai> as the organization owner.
+- Sign in at <https://otari.ai> as the organization owner. **Set the region selector (top right of the sign-in page) to Europe first.** It defaults to United States, and signing in there silently creates a second, empty account.
 - **Choose the workspace that holds your current key (Default) in the top-left switcher, and keep it selected for every step.** Routing policies, MCP servers, tool switches and keys belong to one workspace. A policy created in another workspace is invisible to Litmus. That is the most likely way for this setup to fail.
 - Open a terminal in `litmus\`.
 
@@ -46,9 +46,11 @@ node submission\feedback-repros.mjs user403
 
 | Name | Main model | Backup 1 | Backup 2 | Backup 3 |
 |---|---|---|---|---|
-| `litmus-scout` | `groq:openai/gpt-oss-20b` | `openrouter:openai/gpt-oss-20b` | `ovhcloud:gpt-oss-20b` | `nvidia/nemotron-3.5-super-vl-free` |
-| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `openrouter:openai/gpt-oss-120b` | `ovhcloud:gpt-oss-120b` | `nvidia/nemotron-3-ultra-free` |
-| `litmus-researcher` | `openrouter:moonshotai/kimi-k2-0905` | `ovhcloud:gpt-oss-120b` | `nvidia/nemotron-3-ultra-free` | (none) |
+| `litmus-scout` | `groq:openai/gpt-oss-20b` | `openrouter:openai/gpt-oss-20b` | `ovhcloud:gpt-oss-20b` | pick **Nemotron 3.5 Super VL (free) · OpenRouter** from the list |
+| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `openrouter:openai/gpt-oss-120b` | `ovhcloud:gpt-oss-120b` | pick **Nemotron 3 Ultra (free) · OpenRouter** from the list |
+| `litmus-researcher` | `openrouter:moonshotai/kimi-k2-0905` | `ovhcloud:gpt-oss-120b` | pick **Nemotron 3 Ultra (free) · OpenRouter** from the list | (none) |
+
+For the free Nemotron models, type `nemotron` and **pick the catalog row** instead of typing a selector. Typed as `nvidia/nemotron-…-free`, the form reads `nvidia` as the provider, and that backup would always fail. Typed as `openrouter:nvidia/…-free`, it is refused as not available. OpenRouter's real names are `nvidia/nemotron-3.5-super-vl:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`. Check the **Preview** line before clicking **Create policy**: every step should name a provider you have a key for. A new policy can take a few seconds to reach the gateway.
 
 How the backups work:
 
@@ -215,6 +217,7 @@ Open <http://localhost:4173/#otari>. Every feature you plan to show should read 
 | `profile "prompt-injection" is evaluated` FAIL, `not_configured` | Mandate profile differs, or Runs in excludes Default | Edit the mandate: profile `prompt-injection`, Runs in → Default. |
 | same, other reason | Lakera key wrong, or definition not built | Re-enter the key on the litmus-injection row, then Test. |
 | `demo injection reply is blocked` FAIL | Lakera didn't flag it | In Lakera's dashboard, make sure the prompt-defense detector is on for your project's policy. |
+| An ordinary plan is blocked in the app (score ~0.4) although the checker passes | Wording like "never as instructions to you" in the text being screened | Fixed in `otari.js`: the label on person-written text is neutral, and the rule lives in the system prompt, which guardrails don't screen. |
 | `demo plan is NOT blocked` FAIL | Lakera false positive on the plan | Set `LITMUS_GUARDRAIL_MODE=monitor`. The injection is then flagged but not blocked, so say "flagged" in the video. |
 | `Otari ran an MCP tool call` FAIL | Token or allowed tools | The token needs public-repo read access. Allowed tools must match **Test connection**. |
 | `web fetch runs` FAIL 402 | Balance empty | Organization → Billing. |
