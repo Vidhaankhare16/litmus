@@ -5,7 +5,9 @@
   "description": "Litmus: the test happens before the code. Contribution intelligence for open source, on open-weight models through Otari.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check otari.js && node --check app.js && node --check scripts/selftest.js",
-    "test": "node scripts/selftest.js"
+    "check": "node --check server.js && node --check otari.js && node --check app.js && node --check scripts/selftest.js && node --check scripts/smoke.js && node --check scripts/demo-scenarios.js",
+    "test": "node scripts/selftest.js",
+    "smoke": "node scripts/smoke.js",
+    "demo": "node scripts/demo-scenarios.js"
   }
 }
