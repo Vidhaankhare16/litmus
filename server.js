@@ -18,7 +18,8 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const root = __dirname;
-const port = Number(process.env.LITMUS_PORT || 4173);
+// Cloud Run injects PORT and expects the container to listen on it.
+const port = Number(process.env.PORT || process.env.LITMUS_PORT || 4173);
 const dataDir = process.env.LITMUS_DATA_DIR || path.join(root, 'data');
 const storePath = path.join(dataDir, 'store.json');
 const repoMemoryPath = path.join(dataDir, 'repo-memory.json');
