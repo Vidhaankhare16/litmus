@@ -6,7 +6,7 @@
 
 **Litmus matches open-source contributors to issues they can land, pressure-tests their plan against the real codebase before they write code, and gives maintainers a trust-ranked review queue. It runs on three open-weight models through [Otari](https://github.com/mozilla-ai/otari), with routing fallbacks, guardrails on untrusted text and per-contributor budgets.**
 
-Built for Mozilla.ai's *Developers Wilding* hackathon · [Demo repository](https://github.com/Vidhaankhare16/Google-Gen-AI/issues) · [Otari setup](docs/OTARI-SETUP.md)
+Built for Mozilla.ai's *Developers Wilding* hackathon · **[Try it live](https://litmus-822987556610.us-central1.run.app)** · [Demo repository](https://github.com/Vidhaankhare16/Google-Gen-AI/issues) · [Otari setup](docs/OTARI-SETUP.md) · [Contributions back to Otari](#contributing-back-to-otari)
 
 </div>
 
@@ -46,33 +46,35 @@ flowchart LR
   O -- "chat/completions<br/>user · Otari-End-User-Budget · guardrails ·<br/>tools · mcp_server_ids · metadata tags" --> G["Otari gateway<br/>routing policies · budgets ·<br/>guardrails · web fetch/search ·<br/>code sandbox · MCP"]
   G -- "scout: litmus-scout" --> GQ1["Groq<br/>gpt-oss-20b"]
   G -- "reviewer: litmus-reviewer" --> GQ2["Groq<br/>gpt-oss-120b"]
-  GQ2 -. "413 / 429 → fallback" .-> OR2["OpenRouter<br/>gpt-oss-120b"]
+  GQ2 -. "413 too large → fallback" .-> FW["Fireworks<br/>gpt-oss-120b"]
   GQ1 -. fallback .-> OR1["OpenRouter<br/>gpt-oss-20b"]
-  G -- "researcher: litmus-researcher" --> OR3["OpenRouter<br/>Kimi K2"]
-  G -- MCP --> DW["DeepWiki / GitHub MCP"]
+  G -- "researcher: litmus-researcher" --> OV["OVHcloud<br/>Mistral Small 3.2"]
+  G -- MCP --> DW["GitHub MCP server"]
 ```
 
-| Role | Default model (open-weight) | Jobs | Why this model |
+| Role | Open-weight model (licence) | Jobs | Why this model |
 |---|---|---|---|
-| `scout` | `groq:openai/gpt-oss-20b` | contributor matching, screening question, priority queue | Answers in about 1–3 s for $0.0002–0.0005. Context is trimmed to fit Groq's free tier. |
-| `reviewer` | `openrouter:openai/gpt-oss-120b` (`groq:` via policy) | orientation, plan check, answer assessment, trust brief | Reasons at high effort over about 22k tokens of repository context. |
-| `researcher` | `moonshotai/kimi-k2-instruct-0905` | tool-using grounding: DeepWiki / GitHub MCP, web fetch of linked docs | Strong at tool calls. Runs as free text, so the tool loop never fights strict JSON. |
+| `scout` | gpt-oss-20b (Apache-2.0), Groq first | contributor matching, screening question, priority queue, screening of research findings | Answers in 1–3 s for a fraction of a cent. Context is trimmed to fit Groq's free tier. |
+| `reviewer` | gpt-oss-120b (Apache-2.0), Groq first, then Fireworks, then OVHcloud | orientation, plan check, answer assessment, trust brief | Reasons at high effort over about 25k tokens of repository context. Groq refuses requests that size, so the policy moves them to Fireworks, the fastest host Litmus measured (about 100 tokens/s against 20–40 elsewhere). |
+| `researcher` | Mistral Small 3.2 24B (Apache-2.0) on OVHcloud, then gpt-oss-120b on Fireworks | reads the repository through the GitHub MCP server and fetches docs a plan or issue links to | A different model family from the other two, chosen for tool calls: it made the right MCP and web-fetch calls in 9 s where Kimi K2 took 90 s through a fallback. Runs as free text, so the tool loop never fights strict JSON. |
+
+Each role names an Otari routing policy, so the provider order lives in the Otari dashboard, not in the code. A call that gets no answer within the role's time limit (45 s, or 110 s for the reviewer) is retried once on a different provider, because Otari's fallback acts only before an answer starts.
 
 ## Where Litmus uses each Otari feature
 
-| Otari feature | Where Litmus uses it | Code | How to see it in the demo |
+| Otari feature | Where Litmus uses it | Code | How to see it |
 |---|---|---|---|
-| Open-weight models (≥2, distinct purposes) | gpt-oss-20b scouts, gpt-oss-120b reviews, Kimi K2 researches | `otari.js` `ROLES`, `roleConfig` | Otari view → Roles. Every result card has a provenance line with the served `provider:model`. |
-| Model routing & fallbacks | Each role may name a policy (`litmus-scout`, `litmus-reviewer`, `litmus-researcher`). Litmus records `Otari-Fallback`, `Otari-Attempt-Count`, `Otari-Provider`, `Otari-Model`, `Server-Timing`. An unknown policy gets a visible in-app fallback. | `otari.js` `send`, `readHeaders` | `npm run demo -- fallback`. The provenance line says `fallback: yes · 2 attempts`. |
+| Open-weight models, two or more for different purposes | gpt-oss-20b scouts, gpt-oss-120b reviews, Mistral Small 3.2 researches | `otari.js` `ROLES` | Otari view → Roles. Every result has a provenance line with the model that served it. |
+| Model routing & fallbacks | Every role calls a policy (`litmus-scout`, `litmus-reviewer`, `litmus-researcher`). Litmus records `Otari-Fallback`, `Otari-Attempt-Count`, `Otari-Provider`, `Otari-Model`. An unknown policy gets a visible in-app fallback, and a stalled provider a retry elsewhere. | `otari.js` `send` | Plan review provenance: `fallback: yes · 2 attempts` (Groq refused the 25k-token request; Fireworks served it). |
 | Multiple models in distinct roles | scout / reviewer / researcher | `server.js` task call sites | Activity table, role column |
-| Guardrails | `prompt-injection` in `block` mode on plan text, bot replies and PR descriptions, always the latest user message. A block becomes a trail event. | `otari.js` `chatJson`, `guardrailEntries`; `server.js` `recordGuardrailEvent` | `npm run demo -- injection`. The reply card says "Otari guardrail blocked the reply", and the trust brief and queue flag the contributor. |
-| Per-user budgets | `user` = `github:<login>` or `maintainer:<owner>`, plus `Otari-End-User-Budget` for contributor vs maintainer budgets. Refusals become an allowance message. | `otari.js` `endUserFields`, `classify` | `npm run demo -- budget`: one contributor is stopped and another continues. |
-| Budgets & spending limits | **Budget saver:** before each call Litmus reads `GET /key/budget`. When the key's ceiling is nearly spent (20% left by default), it stops paying for gateway tools (web fetch, code execution) and lowers the reviewer's reasoning effort, so plan checks keep working until the period resets. Also: `usage.cost_usd` on every call, `budget_exceeded` handled, spend grouped by `end_user` tag | `otari.js` `budgetSaver`; `server.js` `otariStatus` | Plan review shows an amber `budget saver · $… left · effort medium` chip and `web skipped: budget saver`. Otari view → Budgets row, Key budget, Spend by person |
-| Web fetch / search | Researcher fetches docs linked from the issue or plan (`otari_web_fetch`, optional `otari_web_search` with `max_uses`) | `otari.js` `research` | Plan review → "Docs read by Otari web fetch", with `otari_tool_calls` |
-| MCP | `mcp_server_ids` (workspace DeepWiki / GitHub) or inline DeepWiki with `purpose_hint` and `allowed_tools` | `otari.js` `mcpConfig`, `research` | Orientation → "Grounding from Otari tools" |
-| Code execution | A fenced snippet in a plan runs in `otari_code_execution` and its stdout feeds the reviewer | `otari.js` `runSnippet` | Plan with a code block → "Your snippet, run in Otari's code sandbox" |
+| Guardrails | A `prompt-injection` guardrail in `block` mode on every piece of text a stranger wrote: plans, bot replies, PR descriptions, and what the researcher brought back from web pages and repository files. That last one gets its own screening call, because Otari screens only the latest user message and in the review that slot belongs to the plan. Flagged findings are set aside, and the review runs without them. A block becomes an event on the contributor's trail. | `otari.js` `chatJson`, `screenResearch`; `server.js` `recordGuardrailEvent` | Bot reply with an injection → "Otari guardrail blocked the reply"; research box → "screened by guardrail: clean". |
+| Per-user budgets | A service key. Each person is their own Otari end user (`github:<login>`, `maintainer:<owner>`) on a contributor ($0.50/day), trial ($0.05/day) or maintainer ($1/day) budget, chosen with `Otari-End-User-Budget` and changed with `PUT /end-users`. A refusal becomes an allowance message. | `otari.js` `endUserFields`, `setEndUserBudget` | Maintainer → Allowances: put a newcomer on the trial allowance, see spend per person. |
+| Budgets & spending limits | A $10 monthly ceiling on the key. **Budget saver:** before each call Litmus reads `GET /key/budget`; with 20% or less left it stops paying for web fetch and code execution and lowers the reviewer's reasoning effort, so plan checks keep working until the period resets. `usage.cost_usd` is recorded on every call. | `otari.js` `budgetSaver` | Allowances → "Whole app: $… used of the $10 limit"; Otari view → Budgets |
+| Web fetch | The researcher fetches docs linked from the issue or plan with `otari_web_fetch` | `otari.js` `research` | Plan review → "What the researcher read through Otari" |
+| MCP | The workspace's GitHub MCP server, by `mcp_server_ids`: the researcher reads the live file the issue touches with `get_file_contents` | `otari.js` `research` | Orientation and plan review → `mcp:get_file_contents · completed` |
+| Code execution | A fenced snippet in a plan runs in `otari_code_execution`, and its stdout feeds the reviewer | `otari.js` `runSnippet` | Plan with a code block → "Your snippet, run in Otari's code sandbox" |
 
-The Otari view (`/#otari`) counts a feature as **in use** only when Litmus's own calls used it. Its source is `GET /api/otari/status`, which reads the activity log plus live probes of `/models`, `/tools`, guardrail profiles, MCP servers and `/key/budget`. Each feature shows its last request id.
+The Otari view (`/#otari`) marks a feature **in use** only when Litmus's own calls used it, with the last request id as proof.
 
 ## Run it
 
@@ -85,6 +87,7 @@ npm run smoke             # one tiny call per role: provider, model, fallback, c
 npm start                 # http://localhost:4173  (Otari view: /#otari)
 npm test                  # offline self-test of otari.js against a mock gateway
 npm run demo -- all       # plan check, injection attempt, fallback, per-user budget
+npm run eval              # 3 plans with known answers, run twice each, against the running server
 ```
 
 The dashboard steps that switch on routing policies, the service key and end-user budgets, the guardrail, the Tools toggles and the MCP servers are in **[docs/OTARI-SETUP.md](docs/OTARI-SETUP.md)**. Each step names the env var to set afterwards. All variables are documented in [`.env.example`](.env.example).
@@ -100,18 +103,28 @@ The dashboard steps that switch on routing policies, the service key and end-use
 | `GET /api/otari/status`, `GET /api/otari/activity` | Rubric features with evidence; last 200 calls |
 | `GET /api/health`, `/api/trail`, `/api/repo-graph`, `/api/register-repo` | The rest of the app |
 
-## What is verified, and what needs the dashboard
+## How well it works
 
-Verified live on otari.ai (EU) on 2026-11-09:
+`npm run eval` sends three plans with a known right answer for issue #1 of the demo repository, as fresh contributors, through the live Otari setup above. Results on 2026-11-11, two runs each:
 
-- All seven tasks run through Otari on open-weight models with strict `json_schema` on Chat Completions: Groq gpt-oss-20b, OpenRouter gpt-oss-120b, and Kimi K2 via OpenRouter.
-- Otari's routing headers, `usage.cost_usd`, the `Otari-Guardrails` verdict and the request id are captured on every call.
-- A routing-policy name Otari does not know gets `400 invalid_model`. Litmus falls back visibly.
-- A non-service key refuses `user` with 403. Litmus falls back to request tags, so spend per person still shows.
-- Refusals degrade cleanly and are recorded: web tools disabled (403), inline MCP disallowed (400), code execution unfunded (402).
-- `npm test` exercises a guardrail block, an end-user budget refusal, a non-strict model and a repair turn against a mock gateway.
+| Plan | What a correct review says | Result |
+|---|---|---|
+| Call `delete_document()` from inside `store_document()` | major gaps: it deadlocks, because both take the same non-reentrant `threading.Lock` | 2 of 2 |
+| Evict inside the lock already held, clean up after releasing it | not major gaps, and no deadlock claimed | 2 of 2 |
+| Rename `get_stats()`, which an API route calls | gaps: it breaks the `/stats` route | 2 of 2 |
 
-Needs dashboard configuration first (the Otari view says which): routing policies, the service key and end-user budgets, a key ceiling, a guardrail definition (the hosted deployment has no guardrails service), the Tools toggles, and workspace MCP servers. The paid tools also need balance or an organization search key.
+All 33 `path:line` citations in those reviews were confirmed against the code. Litmus checks every citation itself, without a model: the file must be in the repository map, the lines must exist, and the cited symbol must be at those lines or be the function that contains them. Each one is marked **verified**, **lines approximate** or **not confirmed** in the review. Median time per plan check was about a minute, including the researcher's tool calls, and the average cost was 1.4 cents.
+
+## What is verified live
+
+On otari.ai (EU), 2026-11-11:
+
+- All seven tasks run through Otari routing policies on open-weight models with strict `json_schema`.
+- The reviewer's 25k-token requests fall back from Groq (HTTP 413) to Fireworks, and `Otari-Fallback` / `Otari-Attempt-Count` say so.
+- The researcher's tool calls run through Otari: `get_file_contents` on the GitHub MCP server and `otari_web_fetch` on linked docs.
+- The demo injection is blocked with `403 guardrail_violation` before any model reads it, and an ordinary plan is not.
+- End users are billed separately on the service key, and the trial allowance is set through `PUT /end-users`.
+- `npm test` covers the same paths offline against a mock gateway: guardrail block, end-user refusal, a non-strict model, a repair turn, a stalled provider, research screening and the budget saver.
 
 ## Migration story: GPT-5.6 → open-weight models via Otari
 
@@ -119,11 +132,23 @@ Litmus started on OpenAI's Responses API with GPT-5.6 and strict JSON schemas. T
 
 What changed, and what broke:
 
-- **Strict JSON held up.** gpt-oss-20b/120b on Groq and OpenRouter and Kimi K2 all accepted Litmus's strict schemas (nested objects, enums, integer bounds, `maxItems`). Litmus still validates locally, retries with `json_object` plus the schema in the prompt if a model refuses strict mode, and allows one repair turn.
+- **Strict JSON held up.** gpt-oss-20b/120b on Groq, Fireworks, OVHcloud and OpenRouter, and Mistral Small 3.2, all accepted Litmus's strict schemas (nested objects, enums, integer bounds, `maxItems`). Litmus still validates locally, retries with `json_object` plus the schema in the prompt if a model refuses strict mode, and allows one repair turn.
 - **Reasoning budgets.** gpt-oss and Qwen 3.5 are reasoning models. With small `max_tokens` they return `content: null` and `finish_reason: length`, because reasoning used the budget. Litmus sets per-role token budgets and retries at low effort when that happens.
 - **Context limits are a provider property.** Groq's free tier refused a 22k-token plan check with HTTP 413 (Otari surfaced it as 502). The fix is a per-role context budget plus a fallback policy, so Groq serves what fits and OpenRouter serves the rest.
 - **Quality needed prompting.** At medium effort, gpt-oss-120b called the deadlock plan "sound", where GPT-5.6 had caught it. High effort, an explicit "trace what the plan executes call by call" method, and putting the plan last in the prompt brought the finding back, with three cited line ranges.
 - **Prompt order now matters for safety.** Otari's input guardrails screen only the latest user message, so untrusted text always goes last and repository context goes before it.
+
+## Contributing back to Otari
+
+Building Litmus turned up bugs in Otari itself. Each one was filed with request ids and a reproduction, and some with a fix:
+
+- **PR [#3026](https://github.com/mozilla-ai/otari/pull/3026), merged:** `/v1/responses` returned `text.format.schema` as `schema_`, so structured output was not a valid Responses object. Fixes [#3025](https://github.com/mozilla-ai/otari/issues/3025).
+- **PR [#3065](https://github.com/mozilla-ai/otari/pull/3065):** a routing policy still sent `reasoning` / `thinking` to a non-reasoning fallback on Responses and Messages ([#3034](https://github.com/mozilla-ai/otari/issues/3034)).
+- **PRs [#3066](https://github.com/mozilla-ai/otari/pull/3066) and [#3067](https://github.com/mozilla-ai/otari/pull/3067):** docs for the routes a key reads its budget from ([#3030](https://github.com/mozilla-ai/otari/issues/3030)), and for fetch and code execution billing end users ([#3027](https://github.com/mozilla-ai/otari/issues/3027)).
+- **Issues fixed by the maintainers:** a provider's 413 came back as a retryable 502 ([#3028](https://github.com/mozilla-ai/otari/issues/3028)); OpenRouter-key completions were priced 0.4–4.9× off ([#3029](https://github.com/mozilla-ai/otari/issues/3029)); a BYO-key code-execution 402 that `/tools` hid ([#3031](https://github.com/mozilla-ai/otari/issues/3031)); Groq's `json_validate_failed` came back as a bare 400 ([#3033](https://github.com/mozilla-ai/otari/issues/3033)).
+- **Open:** stable error codes for two refusals ([#3032](https://github.com/mozilla-ai/otari/issues/3032)), and Groq streaming with `response_format` in any-llm ([any-llm #1627](https://github.com/mozilla-ai/any-llm/issues/1627)).
+
+Security findings went privately to Mozilla.ai and are not described here.
 
 ## How it is built
 

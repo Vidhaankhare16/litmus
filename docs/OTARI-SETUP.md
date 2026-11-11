@@ -47,8 +47,8 @@ node submission\feedback-repros.mjs user403
 | Name | Main model | Backup 1 | Backup 2 | Backup 3 |
 |---|---|---|---|---|
 | `litmus-scout` | `groq:openai/gpt-oss-20b` | `openrouter:openai/gpt-oss-20b` | `ovhcloud:gpt-oss-20b` | pick **Nemotron 3.5 Super VL (free) · OpenRouter** from the list |
-| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `openrouter:openai/gpt-oss-120b` | `ovhcloud:gpt-oss-120b` | pick **Nemotron 3 Ultra (free) · OpenRouter** from the list |
-| `litmus-researcher` | `openrouter:moonshotai/kimi-k2-0905` | `ovhcloud:gpt-oss-120b` | pick **Nemotron 3 Ultra (free) · OpenRouter** from the list | (none) |
+| `litmus-reviewer` | `groq:openai/gpt-oss-120b` | `fireworks:accounts/fireworks/models/gpt-oss-120b` | `ovhcloud:gpt-oss-120b` | pick **Nemotron 3 Ultra (free) · OpenRouter** from the list |
+| `litmus-researcher` | `ovhcloud:Mistral-Small-3.2-24B-Instruct-2506` | `fireworks:accounts/fireworks/models/gpt-oss-120b` | `ovhcloud:gpt-oss-120b` | (none) |
 
 For the free Nemotron models, type `nemotron` and **pick the catalog row** instead of typing a selector. Typed as `nvidia/nemotron-…-free`, the form reads `nvidia` as the provider, and that backup would always fail. Typed as `openrouter:nvidia/…-free`, it is refused as not available. OpenRouter's real names are `nvidia/nemotron-3.5-super-vl:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`. Check the **Preview** line before clicking **Create policy**: every step should name a provider you have a key for. A new policy can take a few seconds to reach the gateway.
 
@@ -71,8 +71,8 @@ Every model in the table was called successfully through Otari on 2026-11-09, so
 
 | Name | Limit (USD) | Resets | What it is for |
 |---|---|---|---|
-| `litmus-contributor` | `0.25` | Daily | every contributor's daily allowance (the default) |
-| `litmus-trial` | `0.02` | Daily | a smaller trial allowance; the budget demo puts @demo-heavy on it |
+| `litmus-contributor` | `0.50` | Daily | every contributor's daily allowance (the default) |
+| `litmus-trial` | `0.05` | Daily | a smaller trial allowance; the budget demo puts @demo-heavy on it |
 | `litmus-maintainer` | `1.00` | Daily | maintainer actions (queue, screening question, trust brief) |
 
 Keep the names. The checker finds budgets by the words *contributor*, *trial* and *maintainer*. Leave "Token and request limits" closed.
@@ -86,7 +86,7 @@ A budget caps nothing on its own. Step 3 attaches these to the service key.
 **API keys** → **Create key** → **New key**:
 
 1. **Name**: `litmus-service`.
-2. **Budget (optional)**: choose **Custom amount…**, then **Limit (USD)** `1.50` and **Resets** Monthly. This is the key's own spend limit, which covers the "budgets & spending limits" rubric item. It covers every end user behind the key.
+2. **Budget (optional)**: choose **Custom amount…**, then **Limit (USD)** `10` and **Resets** Monthly. This is the key's own spend limit, which covers the "budgets & spending limits" rubric item. It covers every end user behind the key.
 3. Click **Advanced** and tick **Service key**. It can't be undone; that's fine.
 4. **End-user budgets**: tick `litmus-contributor`, `litmus-trial` and `litmus-maintainer`. Each shows its id in grey; you don't need to copy them.
 5. **Default end-user budget**: `litmus-contributor`.
@@ -108,7 +108,7 @@ That means: rename the old `OTARI_API_KEY=` line to `REPRO_KEY=`, then add the n
 - "a request naming an end user is billed to them" should PASS.
 - "the key has a spend limit" should PASS.
 
-The Otari-reported cost counts your BYO Groq and OpenRouter calls at catalog rates, even though they aren't taken from your balance. So $1.50 covers several hundred plan checks.
+The Otari-reported cost counts your BYO Groq and OpenRouter calls at catalog rates, even though they aren't taken from your balance. A full plan check costs about two to three cents (most of it the one-cent web fetch), so $10 covers a few hundred.
 
 ---
 
@@ -213,7 +213,7 @@ Open <http://localhost:4173/#otari>. Every feature you plan to show should read 
 | `litmus-reviewer fails over` FAIL | All candidates failed | `npm run verify -- --only=models` shows which model is down. |
 | `key is a service key` WARN after step 3 | `.env` still has the old key | Put the litmus-service secret in `OTARI_API_KEY`. |
 | `budget … is on the key` FAIL | Budget not ticked under End-user budgets | API keys → litmus-service → edit → tick it. |
-| `the key has a spend limit` FAIL | No Budget on the key | API keys → litmus-service → edit → Budget (optional) → Custom amount… 1.50. |
+| `the key has a spend limit` FAIL | No Budget on the key | API keys → litmus-service → edit → Budget (optional) → Custom amount… 10. |
 | `profile "prompt-injection" is evaluated` FAIL, `not_configured` | Mandate profile differs, or Runs in excludes Default | Edit the mandate: profile `prompt-injection`, Runs in → Default. |
 | same, other reason | Lakera key wrong, or definition not built | Re-enter the key on the litmus-injection row, then Test. |
 | `demo injection reply is blocked` FAIL | Lakera didn't flag it | In Lakera's dashboard, make sure the prompt-defense detector is on for your project's policy. |

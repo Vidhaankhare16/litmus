@@ -42,7 +42,8 @@ const CANDIDATES = [
   { model: 'groq:openai/gpt-oss-120b', key: 'Groq', billing: 'free tier' },
   { model: 'openrouter:openai/gpt-oss-20b', key: 'OpenRouter', billing: 'paid OpenRouter model' },
   { model: 'openrouter:openai/gpt-oss-120b', key: 'OpenRouter', billing: 'paid OpenRouter model' },
-  { model: 'openrouter:moonshotai/kimi-k2-0905', key: 'OpenRouter', billing: 'paid OpenRouter model' },
+  { model: 'ovhcloud:Mistral-Small-3.2-24B-Instruct-2506', key: 'otari.ai hosted', billing: 'Otari balance', paid: true },
+  { model: 'fireworks:accounts/fireworks/models/gpt-oss-120b', key: 'otari.ai hosted', billing: 'Otari balance', paid: true },
   { model: 'ovhcloud:gpt-oss-20b', key: 'otari.ai hosted', billing: 'Otari balance', paid: true },
   { model: 'ovhcloud:gpt-oss-120b', key: 'otari.ai hosted', billing: 'Otari balance', paid: true },
   { model: 'nvidia/nemotron-3.5-super-vl-free', key: 'OpenRouter', billing: 'free model, 50/day' },
@@ -157,7 +158,7 @@ async function checkBudgets() {
   const list = discovered.endUserBudgets;
   for (const b of list) console.log(`         budget "${b.name || '(no name)'}" id=${b.budget_id} $${b.max_budget ?? '∞'} per ${b.budget_duration_sec ? `${Math.round(b.budget_duration_sec / 3600)}h` : 'period'}${b.is_default ? ' (default)' : ''}, ${b.end_user_count} end users`);
   const find = pattern => list.find(b => pattern.test(b.name || ''));
-  const want = { LITMUS_BUDGET_CONTRIBUTOR: [/contributor/i, 'litmus-contributor ($0.25, daily)'], LITMUS_BUDGET_TRIAL: [/trial/i, 'litmus-trial ($0.02, daily)'], LITMUS_BUDGET_MAINTAINER: [/maintainer/i, 'litmus-maintainer ($1.00, daily)'] };
+  const want = { LITMUS_BUDGET_CONTRIBUTOR: [/contributor/i, 'litmus-contributor ($0.50, daily)'], LITMUS_BUDGET_TRIAL: [/trial/i, 'litmus-trial ($0.05, daily)'], LITMUS_BUDGET_MAINTAINER: [/maintainer/i, 'litmus-maintainer ($1.00, daily)'] };
   for (const [envName, [pattern, label]] of Object.entries(want)) {
     const match = find(pattern);
     if (match) { discovered[envName] = match.budget_id; report('budgets', 'PASS', `budget ${label.split(' ')[0]} is on the key`, `id ${match.budget_id}${get(envName) === match.budget_id ? '' : ` (${envName} ${write ? 'will be written' : 'not set yet'})`}`); }
