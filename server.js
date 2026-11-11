@@ -597,6 +597,8 @@ const researchFiles = context => context.files.filter(file => isCodePath(file.pa
 // guardrail before the reviewer sees them; findings that fail are quarantined and the review goes on without them.
 async function screenedResearch(result, { task, endUser, audience = 'contributor' }) {
   if (!result || result.skipped || !result.text) return result;
+  // Otari already screened every tool result inside the research call, so no second call is needed.
+  if (result.nativeScreen) return { ...result, screening: { screened: true, native: true, quarantined: false, verdict: (result.nativeScreen.verdicts || [])[0] || null, requestId: result.nativeScreen.requestId } };
   const screening = await otari.screenResearch({ task, text: result.text, endUser, audience });
   return screening.quarantined ? { ...result, text: null, quarantined: true, screening } : { ...result, screening };
 }
@@ -678,7 +680,7 @@ async function analyzePlan({ repo: repoInput, issueNumber, plan, username, tone 
 function researchSummary(result) {
   if (!result) return null;
   return { skipped: Boolean(result.skipped), reason: result.reason || null, text: result.text || null, toolCalls: result.toolCalls || [], skippedTools: result.skippedTools || [], otari: result.provenance || null,
-    quarantined: Boolean(result.quarantined), screening: result.screening ? { screened: Boolean(result.screening.screened), quarantined: Boolean(result.screening.quarantined), score: result.screening.verdict?.score ?? null, requestId: result.screening.requestId || null } : null };
+    quarantined: Boolean(result.quarantined), screening: result.screening ? { screened: Boolean(result.screening.screened), native: Boolean(result.screening.native), quarantined: Boolean(result.screening.quarantined), score: result.screening.verdict?.score ?? null, requestId: result.screening.requestId || null } : null };
 }
 
 // The guardrail stopped the plan before any model read it: record it, keep the plan out of the trail's revisions.

@@ -453,14 +453,24 @@ async function research({ task, question, urls = [], files = [], repo = null, au
   const userText = [question, repo ? `Repository: owner "${owner}", repo "${name}"` : '', urls.length ? `Links to read: ${urls.slice(0, 2).join(' ')}` : '',
     files.length && mcp ? `Repository files to read with get_file_contents: ${files.slice(0, 2).join(', ')}` : ''].filter(Boolean).join('\n');
   let retriedToolChoice = false;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const { result, base, cfg, notes } = await send({ task, role: 'researcher', audience, endUserLogin: endUser, messages: [{ role: 'system', content: system }, { role: 'user', content: userText }], tools, mcp: mcpUse });
+  // Otari can screen tool results itself (guardrail `on: ["tool_results"]`, mozilla-ai/otari#3149): a flagged page
+  // or MCP answer is replaced before the researcher reads it. A gateway without it answers 422, and Litmus then
+  // falls back to screening the findings in a call of its own (screenResearch), and asks again after six hours.
+  const nativeOff = learned.noToolResultGuard && Date.now() - learned.noToolResultGuard.at < 6 * 60 * 60e3;
+  let toolGuard = isOn('LITMUS_GUARDRAILS', 'on') && !nativeOff ? [{ profile: env('LITMUS_GUARDRAIL_PROFILE', 'prompt-injection'), mode: 'block', on_unavailable: env('LITMUS_GUARDRAIL_ON_UNAVAILABLE', 'monitor'), on: ['tool_results'] }] : null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const { result, base, cfg, notes } = await send({ task, role: 'researcher', audience, endUserLogin: endUser, messages: [{ role: 'system', content: system }, { role: 'user', content: userText }], tools, mcp: mcpUse, guardrails: toolGuard });
     if (result.ok) {
       const entry = record({ ...attemptRecord(result, base), outputMode: 'text+tools', skippedTools: skippedFamilies });
       const text = String(result.payload.choices?.[0]?.message?.content || '').slice(0, 4000);
-      return { skipped: false, text, toolCalls: entry.toolCalls, skippedTools: skippedFamilies, provenance: provenance(entry, cfg, notes) };
+      return { skipped: false, text, toolCalls: entry.toolCalls, skippedTools: skippedFamilies, provenance: provenance(entry, cfg, notes), nativeScreen: toolGuard ? { verdicts: result.meta.guardrails || [], requestId: result.meta.requestId } : null };
     }
-    const entry = record({ ...attemptRecord(result, base), outputMode: 'text+tools' });
+    const entry = record({ ...attemptRecord(result, base), outputMode: 'text+tools', ...(toolGuard && result.meta.status === 422 ? { note: 'this Otari does not screen tool results yet; Litmus screens the findings itself' } : {}) });
+    if (toolGuard && result.meta.status === 422 && /guardrails/.test(result.detail || '') && /"on"/.test(result.detail || '')) {
+      learned.noToolResultGuard = { at: Date.now(), requestId: result.meta.requestId };
+      toolGuard = null;
+      continue;
+    }
     // When the tool budget runs out Otari switches tools off for the last turn; some models still emit a
     // tool call and the provider rejects it with a 400. The work is lost either way, so try once more.
     if (/tool choice is none/i.test(result.detail || '') && !retriedToolChoice) { retriedToolChoice = true; continue; }
@@ -482,8 +492,8 @@ async function research({ task, question, urls = [], files = [], repo = null, au
 
 /**
  * screenResearch: what the researcher brings back (web pages, repository files read over MCP) was written by
- * strangers, and it is handed to the reviewer. Otari's input guardrails screen only the latest user message,
- * and in the review that slot belongs to the contributor's plan. So the findings get a screening call of
+ * strangers, and it is handed to the reviewer. Where Otari cannot screen tool results itself yet, its input
+ * guardrails screen only the latest user message, and in the review that slot belongs to the contributor's plan. So the findings get a screening call of
  * their own on the cheap scout role, as its latest user message, in block mode. A block quarantines the
  * findings: the review continues without them and the UI says why.
  */

@@ -29,6 +29,8 @@ const mock = http.createServer((req, res) => {
     seen.push(body);
     const latest = body.messages[body.messages.length - 1].content;
     if (body.model === 'stall') return; // a provider that accepts the request and never answers
+    // A gateway from before mozilla-ai/otari#3149 refuses a guardrail that reads tool results.
+    if (body.guardrails?.[0]?.on?.includes('tool_results') && process.env.SELFTEST_NATIVE_TOOL_GUARD !== 'on') return reply(res, 422, { detail: [{ type: 'literal_error', loc: ['body', 'guardrails', 0, 'on', 0], msg: "Input should be 'input' or 'output'" }], code: 'invalid_request' }, { 'Otari-Error-Code': 'invalid_request' });
     if (body.model === 'litmus-scout') return reply(res, 400, { detail: 'Unknown model litmus-scout', code: 'invalid_model' }, { 'Otari-Error-Code': 'invalid_model' });
     if (body.guardrails && /IGNORE ALL/.test(latest)) return reply(res, 403, { detail: "Blocked by guardrail 'prompt-injection'", code: 'guardrail_violation' }, { 'Otari-Error-Code': 'guardrail_violation' });
     if (body.user === 'github:spent') return reply(res, 403, { detail: 'End user has exceeded budget limit', code: 'budget_exceeded' }, { 'Otari-Error-Code': 'budget_exceeded', 'Otari-Budget-Scope': 'user', 'Retry-After': '3600' });
@@ -94,6 +96,17 @@ mock.listen(0, '127.0.0.1', async () => {
       assert.equal(provenance.stallRetry.from, 'stall'); assert.equal(seen.at(-1).model, otari.ROLES.reviewer.stallModel);
       assert.equal(otari.recentActivity()[1].error.kind, 'timeout');
       delete process.env.LITMUS_OTARI_TIMEOUT_MS; process.env.LITMUS_MODEL_REVIEWER = 'groq:openai/gpt-oss-120b';
+    });
+    await step('research asks Otari to screen tool results, and falls back when the gateway does not support it yet', async () => {
+      const before = seen.length;
+      const fallback = await otari.research({ task: 'selftest_research', question: 'q', urls: ['https://docs.python.org/3/library/threading.html'] });
+      assert.equal(fallback.skipped, false); assert.equal(fallback.nativeScreen, null);
+      assert.deepEqual(seen[before].guardrails[0].on, ['tool_results']); assert.equal(seen.at(-1).guardrails, undefined);
+      assert.ok(otari.learned.noToolResultGuard);
+      otari.learned.noToolResultGuard = null; process.env.SELFTEST_NATIVE_TOOL_GUARD = 'on';
+      const native = await otari.research({ task: 'selftest_research', question: 'q', urls: ['https://docs.python.org/3/library/threading.html'] });
+      assert.ok(native.nativeScreen); assert.deepEqual(seen.at(-1).guardrails[0].on, ['tool_results']);
+      delete process.env.SELFTEST_NATIVE_TOOL_GUARD;
     });
     await step('research findings are screened by the guardrail: clean ones pass, flagged ones are quarantined', async () => {
       const clean = await otari.screenResearch({ task: 'selftest_screen', text: 'threading.Lock is not reentrant', endUser: 'alice' });
