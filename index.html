@@ -100,6 +100,7 @@
           <button class="rail-item" data-maintainer-tab="repos">Repositories</button>
           <button class="rail-item" data-maintainer-tab="bot">Litmus bot</button>
           <button class="rail-item" data-maintainer-tab="triage">Triage a PR</button>
+          <button class="rail-item" data-maintainer-tab="allowances">Allowances</button>
           <div class="rail-bottom">You decide everything. Litmus compresses the reading, never the judgment.</div>
         </aside>
         <div class="workspace">
@@ -150,6 +151,18 @@
               <div class="repo-input-row"><input id="triage-pr-url" placeholder="https://github.com/owner/repository/pull/123" spellcheck="false" /><button class="cta" id="triage-pr">Create trust brief</button></div>
             </div>
             <div id="triage-result"></div>
+          </div>
+          <div class="maintainer-panel" id="allowances-panel">
+            <div class="page-kicker">ALLOWANCES · OTARI BUDGETS</div>
+            <h1>Strangers use your project. <em>They don't spend your budget.</em></h1>
+            <p class="lede">Litmus sends every person to Otari as their own end user, with their own daily budget. A contributor who uses theirs up is stopped by Otari before a model runs, and nobody else is affected. Put a newcomer on the small trial allowance, and move them to the standard one when they have earned it.</p>
+            <div class="repo-onboard">
+              <label for="allowance-user">CONTRIBUTOR'S GITHUB USERNAME</label>
+              <div class="repo-input-row"><span>github:</span><input id="allowance-user" placeholder="octocat" autocomplete="off" spellcheck="false" /><button class="cta ghost" id="allowance-trial">Trial allowance</button><button class="cta" id="allowance-standard">Standard allowance</button></div>
+              <small>Trial is five cents a day, standard is fifty cents a day. Both are budgets on Litmus's Otari service key, so Otari enforces them, not Litmus.</small>
+            </div>
+            <div id="allowance-result"></div>
+            <div id="allowance-spend"></div>
           </div>
         </div>
       </section>

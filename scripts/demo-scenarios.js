@@ -17,7 +17,7 @@ const issueNumber = Number(process.env.DEMO_ISSUE || 1);
 const deadlockPlan = 'When storage reaches max_documents, inside store_document I will call self.delete_document(oldest_id) to evict the oldest entry by created_at, then insert the new document and bump an evicted counter that get_stats() reports. I checked the locking docs at https://docs.python.org/3/library/threading.html#lock-objects. I will add a test that fills the store past the cap.';
 
 async function call(method, pathname, body) {
-  const response = await fetch(`${base}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const response = await fetch(`${base}${pathname}`, { method, headers: { 'Content-Type': 'application/json', ...(process.env.LITMUS_ADMIN_TOKEN ? { 'X-Litmus-Admin': process.env.LITMUS_ADMIN_TOKEN } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const data = await response.json().catch(() => ({}));
   return { status: response.status, data };
 }
